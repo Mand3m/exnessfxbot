@@ -1,36 +1,26 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Forex Trading Consultants
 
-## Getting Started
+Independent forex-signal desk inspired by the Foresignal layout: live pair cards, monthly pip table, position-size calculator, and a private admin page to publish ideas.
 
-First, run the development server:
+**Not affiliated with Exness Ltd or any broker.** The name is yours; do not imply an official Exness product.
+
+## Run locally
 
 ```bash
+cd C:\Users\GEORGE\exnessfxbot
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+- Signals: `/`
+- Results: `/results`
+- Calculator: `/tools/position-size`
+- Learn: `/learn`
+- Desk: `/admin` — password `exnessfxbot-admin` (change `ADMIN_SECRET` in `.env.local`)
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## How signals work
 
-## Learn More
+Demo cards are created the first time the store is empty (`data/signals.json`). From the desk you can publish, edit, mark filled/cancelled, or reset the demo set.
 
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+On Vercel the file store lives in `/tmp` and resets on cold start. For a durable live book, move it to a database later.

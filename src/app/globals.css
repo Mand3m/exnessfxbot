@@ -1,26 +1,367 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #16130e;
+  --foreground: #ffffff;
+  --muted: #ffffff;
+  --card: rgba(28, 24, 18, 0.94);
+  --card-2: rgba(36, 31, 24, 0.96);
+  --border: #c9a227;
+  --brand: #e0b422;
+  --brand-dim: #c9a227;
+  --sell: #c43333;
+  --buy: #157a3a;
+  --warn: #8a6a10;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
+  --color-muted: var(--muted);
+  --color-card: var(--card);
+  --color-card-2: var(--card-2);
+  --color-border: var(--border);
+  --color-brand: var(--brand);
+  --color-brand-dim: var(--brand-dim);
+  --color-sell: var(--sell);
+  --color-buy: var(--buy);
+  --color-warn: var(--warn);
+  --font-sans: var(--font-didot);
+  --font-serif: var(--font-didot);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  min-height: 100%;
+  font-size: 18px;
+  background-color: #16130e;
+  overflow-x: clip;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  min-height: 100%;
+  min-height: 100dvh;
+  background-color: #16130e;
+  background-image: none;
+  color: #ffffff;
+  font-family: var(--font-didot), "Didot", "Times New Roman", serif;
+  overflow-x: clip;
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+
+@media (min-width: 768px) {
+  body {
+    background-attachment: fixed;
+  }
+}
+
+h1,
+h2,
+h3,
+h4 {
+  color: #ffd700;
+}
+
+.site-header,
+.site-footer {
+  color: #ffffff;
+}
+
+.site-footer a,
+.site-footer p,
+.site-footer li,
+.site-footer span {
+  color: #ffffff;
+}
+
+.site-header h1,
+.site-header h2,
+.site-header h3,
+.site-header h4,
+.site-footer h1,
+.site-footer h2,
+.site-footer h3,
+.site-footer h4 {
+  color: #ffd700;
+}
+
+@layer base {
+  a {
+    color: inherit;
+  }
+}
+
+/* Solid gold fill always uses black labels.
+   Page/body gold plus `a { color: inherit }` otherwise paints Login/Register gold-on-gold. */
+[class~="bg-[#e0b422]"],
+[class~="bg-[#e0b422]"]:hover,
+[class~="bg-[#e0b422]"]:focus,
+[class~="bg-[#e0b422]"]:active,
+[class~="hover:bg-[#e0b422]"]:hover {
+  color: #000000 !important;
+}
+
+input,
+select,
+textarea {
+  color: #111111;
+  background-color: #ffffff;
+  font-size: 18px;
+}
+
+/* Desk/public forms: gold-on-white and white-on-white both hide typed prices. */
+main input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]):not([type="file"]):not([type="range"]):not([type="button"]):not([type="submit"]),
+main select,
+main textarea {
+  color: #111111 !important;
+  background-color: #ffffff !important;
+  caret-color: #111111;
+}
+
+main input::placeholder,
+main textarea::placeholder {
+  color: #4b5563 !important;
+}
+
+main option {
+  color: #111111;
+  background-color: #ffffff;
+}
+
+.site-header input,
+.site-header select,
+.site-header textarea,
+.site-footer input,
+.site-footer select,
+.site-footer textarea {
+  color: #f3d56a;
+  background-color: #0a0a0a;
+}
+
+button,
+a {
+  touch-action: manipulation;
+}
+
+::selection {
+  background: #e0b422;
+  color: #000;
+}
+
+.num {
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  color: #ffffff;
+}
+
+.site-header .num,
+.site-footer .num {
+  color: #ffffff;
+}
+
+main [class~="text-[#f3d56a]"],
+main [class~="text-[#d4b84a]"],
+main [class~="text-[#c4b089]"],
+main [class~="text-[#e0b422]"] {
+  color: #ffffff !important;
+}
+
+main h1,
+main h2,
+main h3,
+main h4 {
+  color: #ffd700 !important;
+}
+
+.results-panel {
+  background-color: transparent !important;
+  color: #ffffff !important;
+}
+
+.results-panel h1,
+.results-panel h2,
+.results-panel h3,
+.results-panel h4,
+.results-panel th {
+  color: #ffd700 !important;
+}
+
+.results-panel p,
+.results-panel td,
+.results-panel span,
+.results-panel .num {
+  color: #ffffff !important;
+}
+
+.results-panel .results-profit {
+  color: #6fd36f !important;
+}
+
+.results-panel .results-loss {
+  color: #e9a8b8 !important;
+}
+
+.results-panel button[class~="bg-[#e0b422]"] {
+  color: #000000 !important;
+}
+
+/* Filled + cancelled: page shows through. Pending/active buy green, sell red. */
+.signal-card-ghost,
+.signal-card-filled,
+.signal-card-buy,
+.signal-card-sell {
+  background-image: none !important;
+  color: #ffffff !important;
+  box-shadow: none !important;
+}
+
+.signal-card-ghost,
+.signal-card-filled {
+  background-color: transparent !important;
+}
+
+.signal-card-buy {
+  background-color: #157a3a !important;
+}
+
+.signal-card-sell {
+  background-color: rgba(196, 51, 51, 0.6) !important;
+}
+
+.signal-card-ghost header,
+.signal-card-ghost summary,
+.signal-card-filled header,
+.signal-card-filled summary,
+.signal-card-buy header,
+.signal-card-buy summary,
+.signal-card-sell header,
+.signal-card-sell summary {
+  background-color: transparent !important;
+  color: #ffffff !important;
+}
+
+main .signal-card-ghost h1,
+main .signal-card-ghost h2,
+main .signal-card-ghost h3,
+main .signal-card-ghost h4,
+main .signal-card-filled h1,
+main .signal-card-filled h2,
+main .signal-card-filled h3,
+main .signal-card-filled h4,
+main .signal-card-buy h1,
+main .signal-card-buy h2,
+main .signal-card-buy h3,
+main .signal-card-buy h4,
+main .signal-card-sell h1,
+main .signal-card-sell h2,
+main .signal-card-sell h3,
+main .signal-card-sell h4,
+.signal-card-ghost p,
+.signal-card-ghost dt,
+.signal-card-ghost dd,
+.signal-card-ghost .num,
+.signal-card-ghost a,
+.signal-card-ghost button,
+.signal-card-filled p,
+.signal-card-filled dt,
+.signal-card-filled dd,
+.signal-card-filled .num,
+.signal-card-filled a,
+.signal-card-filled button,
+.signal-card-buy p,
+.signal-card-buy dt,
+.signal-card-buy dd,
+.signal-card-buy .num,
+.signal-card-buy a,
+.signal-card-buy button,
+.signal-card-sell p,
+.signal-card-sell dt,
+.signal-card-sell dd,
+.signal-card-sell .num,
+.signal-card-sell a,
+.signal-card-sell button {
+  color: #ffffff !important;
+}
+
+/* Gold buttons stay black text on gold. */
+main [class~="bg-[#e0b422]"] {
+  color: #000000 !important;
+}
+
+.signal-card {
+  background-color: rgba(0, 0, 0, 0.42) !important;
+  color: #f3d56a;
+}
+
+.signal-card h2 {
+  color: #e0b422;
+}
+
+.signal-card .num {
+  color: #f6e08a;
+}
+
+.signal-card .text-zinc-600,
+.signal-card .text-zinc-900 {
+  color: #d4b84a !important;
+}
+
+.monitor-frame {
+  position: relative;
+  border-radius: 14px;
+  background: #0c0c0c;
+  overflow: hidden;
+}
+
+.monitor-frame::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 2px;
+  background: linear-gradient(
+    105deg,
+    #6e6e6e 0%,
+    #c0c0c0 28%,
+    #ffffff 50%,
+    #c0c0c0 72%,
+    #6e6e6e 100%
+  );
+  background-size: 250% 100%;
+  animation: monitor-shine 2.4s linear infinite;
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
+.monitor-frame__inner {
+  position: relative;
+  z-index: 1;
+  padding: 0.7rem 1rem;
+  text-align: center;
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #ffd700;
+}
+
+@media (min-width: 640px) {
+  .monitor-frame__inner {
+    font-size: 1.25rem;
+    padding: 0.85rem 1.25rem;
+  }
+}
+
+@keyframes monitor-shine {
+  0% {
+    background-position: 0% 50%;
+  }
+  100% {
+    background-position: 200% 50%;
+  }
 }

@@ -39,3 +39,18 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# local signal store
+/data
+
+# Android wrapper (APK copied to public/download)
+/mobile/node_modules
+/mobile/android/.gradle
+/mobile/android/app/build
+/mobile/android/build
+/mobile/android/local.properties
+/mobile/android/capacitor-cordova-android-plugins/build
+
+# python bytecode
+__pycache__/
+*.pyc

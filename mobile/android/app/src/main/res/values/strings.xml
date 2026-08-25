@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Forex Trading Consultants</string>
+    <string name="title_activity_main">Forex Trading Consultants</string>
+    <string name="package_name">com.forextradingconsultants.app</string>
+    <string name="custom_url_scheme">com.forextradingconsultants.app</string>
+</resources>

@@ -1,0 +1,21 @@
+{
+  "appId": "com.forextradingconsultants.app",
+  "appName": "Forex Trading Consultants",
+  "webDir": "www",
+  "server": {
+    "url": "https://forextradingconsultants.com",
+    "cleartext": false,
+    "androidScheme": "https"
+  },
+  "android": {
+    "backgroundColor": "#000000",
+    "allowMixedContent": false,
+    "appendUserAgent": "FTCApp"
+  },
+  "plugins": {
+    "LocalNotifications": {
+      "smallIcon": "ic_stat_notify",
+      "iconColor": "#e0b422"
+    }
+  }
+}
