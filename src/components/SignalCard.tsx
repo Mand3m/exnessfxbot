@@ -13,6 +13,7 @@ function flagFile(code: string): string | null {
   if (code === "USD") return "/og/flags/us.png";
   if (code === "JPY") return "/og/flags/jp.png";
   if (code === "GBP") return "/og/flags/gb.png";
+  if (code === "EUR") return "/og/flags/eu.png";
   return null;
 }
 
