@@ -70,6 +70,15 @@ export function getPair(id: string): Pair | undefined {
   return PAIRS.find((p) => p.id === id);
 }
 
+export function pairSlug(id: string): string {
+  return id.toLowerCase();
+}
+
+export function pairFromSlug(slug: string): Pair | undefined {
+  const key = String(slug || "").replace("/", "").toLowerCase();
+  return PAIRS.find((p) => p.id.toLowerCase() === key);
+}
+
 export function formatPrice(pair: Pair, price: number): string {
   return price.toFixed(pair.digits);
 }

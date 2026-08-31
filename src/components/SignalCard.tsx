@@ -298,6 +298,15 @@ export function SignalCard({
           </dl>
         ) : signal.status === "cancelled" ? null : (
           <>
+            {signal.levelsNotice ? (
+              <p className="mb-3 rounded-lg border border-white/40 bg-black/30 px-2 py-2 text-sm font-semibold text-white">
+                {signal.levelsReason === "be"
+                  ? `Do this now: move your stop loss to break-even (entry ${formatPrice(pair, signal.entry)}). New SL ${formatPrice(pair, signal.stopLoss)}.`
+                  : signal.levelsReason === "lock1r"
+                    ? `Do this now: close half at market, then lock the rest. New SL ${formatPrice(pair, signal.stopLoss)}.`
+                    : `Prices were adjusted. New stop loss ${formatPrice(pair, signal.stopLoss)}.`}
+              </p>
+            ) : null}
             <dl>
               <DottedRow
                 light

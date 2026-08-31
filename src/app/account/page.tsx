@@ -3,6 +3,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getSession } from "@/lib/auth";
 import { LogoutButton } from "@/components/LogoutButton";
+import { NoticeCentre } from "@/components/NoticeCentre";
 
 export const metadata: Metadata = { title: "Account" };
 
@@ -11,7 +12,7 @@ export default async function AccountPage() {
   if (!user) redirect("/login");
 
   return (
-    <div className="mx-auto max-w-lg px-4 py-8 sm:py-16">
+    <div className="mx-auto max-w-2xl px-4 py-8 sm:py-16">
       <h1 className="text-3xl font-semibold tracking-tight">Your profile</h1>
       <dl className="mt-6 space-y-3 rounded-2xl border border-border bg-card p-6 text-sm">
         <div className="flex justify-between">
@@ -29,7 +30,7 @@ export default async function AccountPage() {
       </dl>
       <p className="mt-4 text-sm text-muted">
         {user.plan === "premium"
-          ? "Premium is active. Cards are instant and each new signal is emailed to you."
+          ? "Premium is active. Cards are instant. New signals and stop-loss moves are emailed to you and listed below."
           : "You are on the regular plan (10-minute delay). Open Premium, pay a package, then wait for admin to confirm the deposit."}
       </p>
       <div className="mt-6 flex flex-wrap items-center gap-3">
@@ -41,6 +42,7 @@ export default async function AccountPage() {
           Signals
         </Link>
       </div>
+      {user.plan === "premium" ? <NoticeCentre /> : null}
     </div>
   );
 }

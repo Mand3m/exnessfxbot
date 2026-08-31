@@ -13,6 +13,9 @@ export type PushHead = {
   pair: string;
   label: string;
   publishedAt: string;
+  kind?: "signal" | "manage";
+  title?: string;
+  body?: string;
 };
 
 export function readPushHead(): PushHead | null {
@@ -28,6 +31,23 @@ export function readPushHead(): PushHead | null {
 function writePushHead(head: PushHead) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   fs.writeFileSync(HEAD_PATH, JSON.stringify(head, null, 2), "utf8");
+}
+
+const MANAGE_HEAD_PATH = path.join(DATA_DIR, "push-manage.json");
+
+export function readManageHead(): PushHead | null {
+  try {
+    const raw = JSON.parse(fs.readFileSync(MANAGE_HEAD_PATH, "utf8")) as PushHead;
+    if (!raw?.id) return null;
+    return raw;
+  } catch {
+    return null;
+  }
+}
+
+export function writeManageHead(head: PushHead) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.writeFileSync(MANAGE_HEAD_PATH, JSON.stringify(head, null, 2), "utf8");
 }
 
 export function notifyNewSignals(

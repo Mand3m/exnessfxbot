@@ -9,8 +9,9 @@ import { listPremiumUsers } from "./auth";
 import { sendSignalAlert } from "./mail";
 import { enqueueMt5Cancel, enqueueMt5Modify, enqueueMt5Open } from "./mt5";
 import { enqueueTelegramSignal, flushTelegramDue } from "./telegram";
-import { scheduleLivePush } from "./live-sync";
+import { liveSyncConfigured, scheduleLivePush } from "./live-sync";
 import { notifyNewSignals } from "./push";
+import { captureTradeNotices } from "./notices";
 import { isEntered } from "./signal-view";
 
 export type { PairId };
@@ -161,6 +162,7 @@ function saveStore(store: Store, opts?: { sync?: boolean }) {
   }
   fs.writeFileSync(STORE_PATH, JSON.stringify(store, null, 2), "utf8");
   notifyNewSignals(previous, store.signals || []);
+  captureTradeNotices(store.signals || [], { alert: !liveSyncConfigured() });
   if (opts?.sync !== false) scheduleLivePush(store);
 }
 
@@ -366,6 +368,60 @@ export function listBoard(opts: { premium: boolean }): BoardCard[] {
 export function listMonthly(): MonthlyRow[] {
   const store = ensureStore();
   return monthlyFromLedger(store.pipLedger || []);
+}
+
+export function listMonthPairSignals(pair: PairId, year: number, month: number): Signal[] {
+  const key = `${year}-${String(month).padStart(2, "0")}`;
+  return ensureStore()
+    .signals.filter((s) => s.pair === pair)
+    .filter((s) => {
+      const stamp = eatStamp(new Date(s.publishedAt || s.from));
+      return stamp.month === key;
+    })
+    .slice()
+    .sort((a, b) => {
+      const ta = new Date(a.publishedAt || a.from).getTime();
+      const tb = new Date(b.publishedAt || b.from).getTime();
+      return tb - ta;
+    });
+}
+
+export function listMonthPairResults(pair: PairId, year: number, month: number): RecentResults {
+  const pairMeta = getPair(pair);
+  const byDay = new Map<string, RecentDay>();
+  const ensureDay = (day: string): RecentDay => {
+    let row = byDay.get(day);
+    if (!row) {
+      row = { day, label: formatEatDay(day), pairs: { [pair]: 0 }, total: 0, trades: [] };
+      byDay.set(day, row);
+    }
+    return row;
+  };
+  for (const s of listMonthPairSignals(pair, year, month)) {
+    if (s.status !== "filled" || typeof s.pips !== "number" || !s.pips) continue;
+    const day = eatDayFromIso(s.updatedAt) || eatDayFromIso(s.publishedAt) || eatDayFromIso(s.from);
+    if (!day) continue;
+    const row = ensureDay(day);
+    row.pairs[pair] = (row.pairs[pair] || 0) + s.pips;
+    row.total += s.pips;
+    row.trades.push({
+      id: s.id,
+      pair,
+      label: pairMeta?.label || pair,
+      pips: s.pips,
+      pct: resultPct(s, s.pips),
+    });
+  }
+  const days = [...byDay.values()].sort((a, b) => a.day.localeCompare(b.day));
+  let profit = 0;
+  let loss = 0;
+  days.forEach((day) => {
+    day.trades.forEach((t) => {
+      if (t.pips > 0) profit += t.pips;
+      else if (t.pips < 0) loss += t.pips;
+    });
+  });
+  return { days, profit, loss };
 }
 
 export function dayPipTotal(pair?: PairId): number {
@@ -669,6 +725,7 @@ function firstHitFromBars(row: Signal, bars: MinuteBar[]): "tp" | "sl" | "cancel
 export async function settleLiveOrders(): Promise<number> {
   await flushTelegramDue().catch(() => []);
   const store = ensureStore();
+  captureTradeNotices(store.signals || [], { alert: !liveSyncConfigured() });
   if (!store.pipLedger) store.pipLedger = [];
   const prices = await fetchLivePrices();
   let changed = 0;

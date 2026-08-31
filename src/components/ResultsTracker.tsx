@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { PAIRS } from "@/lib/pairs";
 import type { PairId } from "@/lib/pairs";
 import type { RecentResults } from "@/lib/signals";
@@ -28,8 +28,34 @@ function colWidth(col: Col) {
   return col.kind === "date" ? DATE_W : COL_W;
 }
 
-export function ResultsTracker({ data }: { data: RecentResults }) {
-  const [focus, setFocus] = useState<"ALL" | PairId>("ALL");
+function colsWidth(cols: Col[]) {
+  return cols.reduce((sum, col) => sum + colWidth(col), 0);
+}
+
+/** Keep the newest columns that fit; drop oldest from the left. */
+function newestFit(cols: Col[], maxPx: number): Col[] {
+  if (cols.length === 0) return cols;
+  if (maxPx <= 0) return [];
+  if (colsWidth(cols) <= maxPx) return cols;
+  let i = 0;
+  while (i < cols.length && colsWidth(cols.slice(i)) > maxPx) i += 1;
+  let cut = cols.slice(i);
+  while (cut[0]?.kind === "date" && cut[1]?.kind !== "trade") cut = cut.slice(1);
+  return cut;
+}
+
+export function ResultsTracker({
+  data,
+  title = "Recent Results",
+  lockPair,
+}: {
+  data: RecentResults;
+  title?: string;
+  lockPair?: PairId;
+}) {
+  const [focus, setFocus] = useState<"ALL" | PairId>(lockPair || "ALL");
+  const plotRef = useRef<HTMLDivElement>(null);
+  const [plotW, setPlotW] = useState(0);
 
   const cols = useMemo(() => {
     const out: Col[] = [];
@@ -64,12 +90,24 @@ export function ResultsTracker({ data }: { data: RecentResults }) {
     return out;
   }, [data.days, focus]);
 
+  useEffect(() => {
+    const el = plotRef.current;
+    if (!el) return;
+    const measure = () => setPlotW(el.clientWidth);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [cols.length]);
+
+  const visible = useMemo(() => newestFit(cols, plotW), [cols, plotW]);
+
   const peak = useMemo(() => {
-    const values = cols
+    const values = visible
       .filter((c): c is Extract<Col, { kind: "trade" }> => c.kind === "trade")
       .map((c) => Math.abs(c.pips));
     return Math.max(20, ...values, 0);
-  }, [cols]);
+  }, [visible]);
 
   const tabs: Array<{ id: "ALL" | PairId; label: string }> = [
     { id: "ALL", label: "ALL" },
@@ -86,7 +124,7 @@ export function ResultsTracker({ data }: { data: RecentResults }) {
 
   return (
     <section className="results-panel rounded-2xl border border-white/30 bg-transparent px-2 py-3 sm:px-4">
-      <h2 className="text-center text-lg font-semibold tracking-tight sm:text-xl">Recent Results</h2>
+      <h2 className="text-center text-lg font-semibold tracking-tight sm:text-xl">{title}</h2>
 
       {cols.length === 0 ? (
         <p className="mt-4 text-center text-sm text-white">No results yet.</p>
@@ -109,8 +147,8 @@ export function ResultsTracker({ data }: { data: RecentResults }) {
             <span className="absolute bottom-0 left-0 text-[11px] font-medium text-white/80">100%</span>
           </div>
 
-          <div className="min-w-0 flex-1 overflow-x-auto">
-            <div className="relative w-max" style={{ height: plotH }}>
+          <div ref={plotRef} className="min-w-0 flex-1 overflow-hidden">
+            <div className="relative w-full overflow-hidden" style={{ height: plotH }}>
               <div className="pointer-events-none absolute inset-0">
                 <div className="absolute right-0 left-0 border-t border-white/20" style={{ top: 0 }} />
                 <div className="absolute right-0 left-0 border-t border-white/10" style={{ top: PROFIT_H / 2 }} />
@@ -124,7 +162,7 @@ export function ResultsTracker({ data }: { data: RecentResults }) {
               </div>
 
               <div className="relative flex h-full">
-                {cols.map((col) => (
+                {visible.map((col) => (
                   <div
                     key={col.key}
                     className="flex h-full shrink-0 flex-col items-center"
@@ -196,6 +234,7 @@ export function ResultsTracker({ data }: { data: RecentResults }) {
         </div>
       )}
 
+      {lockPair ? null : (
       <div className="mt-3 flex flex-wrap justify-center gap-1.5">
         {tabs.map((tab) => (
           <button
@@ -212,6 +251,7 @@ export function ResultsTracker({ data }: { data: RecentResults }) {
           </button>
         ))}
       </div>
+      )}
     </section>
   );
 }

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { AuthBar } from "@/components/AuthBar";
 import { Logo } from "@/components/Logo";
+import { NoticeBell } from "@/components/NoticeBell";
 
 const BAR = "h-[calc(4.25rem+env(safe-area-inset-top))] sm:h-[calc(4.75rem+env(safe-area-inset-top))]";
 
@@ -26,6 +27,7 @@ export function Header() {
             >
               Premium
             </Link>
+            <NoticeBell />
             <AuthBar />
           </div>
         </div>

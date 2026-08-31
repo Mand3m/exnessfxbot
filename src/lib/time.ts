@@ -1,4 +1,13 @@
 /** Calendar day / month in East Africa Time (UTC+3). Day rolls at midnight EAT. */
+export function eatMonthKey(year: number, month: number): string {
+  return `${year}-${String(month).padStart(2, "0")}`;
+}
+
+/** True once the EAT calendar month has finished (not the running month). */
+export function isEatMonthClosed(monthKey: string, now = new Date()): boolean {
+  return monthKey < eatStamp(now).month;
+}
+
 export function eatStamp(date = new Date()): { day: string; month: string; monthLabel: string } {
   const day = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Africa/Nairobi",
@@ -23,6 +32,25 @@ export function formatWhen(iso: string): string {
     minute: "2-digit",
     hour12: true,
   }).format(d);
+}
+
+/** Foresignal-style: "July 31, 2026 at 11:56 AM" in EAT. */
+export function formatArchiveWhen(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  const date = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Africa/Nairobi",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  }).format(d);
+  const time = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Africa/Nairobi",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  }).format(d);
+  return `${date} at ${time}`;
 }
 
 export function formatDay(iso: string): string {

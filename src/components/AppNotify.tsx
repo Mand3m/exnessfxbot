@@ -3,9 +3,17 @@
 import { useEffect } from "react";
 
 const SEEN_KEY = "ftc_push_seen_id";
+const SEEN_MANAGE = "ftc_push_seen_manage";
 const NOTIFY_ID = 41001;
+const MANAGE_ID = 41003;
 
-type Head = { id?: string | null; label?: string | null };
+type Head = {
+  id?: string | null;
+  label?: string | null;
+  kind?: string | null;
+  title?: string | null;
+  body?: string | null;
+};
 
 function nativePlugins() {
   const cap = (window as unknown as { Capacitor?: { Plugins?: Record<string, unknown>; isNativePlatform?: () => boolean } })
@@ -29,7 +37,7 @@ async function readHead(): Promise<Head | null> {
   }
 }
 
-async function alertNew(head: Head) {
+async function alertNew(head: Head, manage: boolean) {
   if (!head.id) return;
   const plugins = nativePlugins();
   if (!plugins) return;
@@ -38,10 +46,14 @@ async function alertNew(head: Head) {
     await plugins.schedule({
       notifications: [
         {
-          id: NOTIFY_ID,
-          title: "New signal",
-          body: `${pair} is on the desk. Open the app to view the card.`,
-          extra: { signalId: head.id },
+          id: manage ? MANAGE_ID : NOTIFY_ID,
+          title: head.title || (manage ? "Trade update" : "New signal"),
+          body:
+            head.body ||
+            (manage
+              ? `${pair} stop was updated. Open the app for details.`
+              : `${pair} is on the desk. Open the app to view the card.`),
+          extra: { id: head.id },
         },
       ],
     });
@@ -70,11 +82,27 @@ export function AppNotify() {
       }
       timer = setInterval(async () => {
         const head = await readHead();
-        if (!head?.id) return;
-        const seen = localStorage.getItem(SEEN_KEY);
-        if (head.id === seen) return;
-        localStorage.setItem(SEEN_KEY, head.id);
-        await alertNew(head);
+        if (head?.id) {
+          const seen = localStorage.getItem(SEEN_KEY);
+          if (head.id !== seen) {
+            localStorage.setItem(SEEN_KEY, head.id);
+            await alertNew(head, false);
+          }
+        }
+        try {
+          const me = await fetch("/api/auth/me", { credentials: "include", cache: "no-store" });
+          const mine = await me.json();
+          if (mine?.user?.plan !== "premium") return;
+          const res = await fetch("/api/push/manage", { credentials: "include", cache: "no-store" });
+          const manage = (await res.json()) as Head;
+          if (!manage?.id) return;
+          const seenM = localStorage.getItem(SEEN_MANAGE);
+          if (manage.id === seenM) return;
+          localStorage.setItem(SEEN_MANAGE, manage.id);
+          await alertNew(manage, true);
+        } catch {
+          /* not signed in */
+        }
       }, 12_000);
     })();
 

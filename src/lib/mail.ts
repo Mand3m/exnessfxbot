@@ -101,6 +101,22 @@ async function sendMail(to: string, subject: string, text: string, html: string)
   }
 }
 
+export async function sendTradeManageAlert(
+  to: string,
+  notice: { title: string; body: string }
+) {
+  const subject = `Forex Trading Consultants: ${notice.title}`;
+  const text = notice.body + "\n\nOpen your account to see the notification centre.\n";
+  const html =
+    '<div style="font-family:Georgia,serif;background:#000;color:#f3d56a;padding:28px">' +
+    '<h1 style="color:#e0b422;font-weight:400">Forex Trading Consultants</h1>' +
+    `<p><strong>${notice.title}</strong></p>` +
+    `<p>${notice.body}</p>` +
+    "<p>Open your account notification centre for the full trade update.</p>" +
+    "</div>";
+  return sendMail(to, subject, text, html);
+}
+
 export async function sendSignalAlert(
   to: string,
   signal: { pair: string; side: string; entry: number; takeProfit: number; stopLoss: number }

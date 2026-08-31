@@ -468,18 +468,47 @@ def comment_for(signal_id: str) -> str:
 
 
 def order_type_for(side: str, entry: float, bid: float, ask: float, point: float) -> tuple[int, float]:
-    slack = max(point * 8, 0.0)
+    """Market if already at entry; limit if we buy/sell cheaper; stop if we buy/sell through."""
+    slack = max(float(point) * 8, 0.0)
+    ask = float(ask or 0)
+    bid = float(bid or 0)
     if side == "buy":
-        if ask <= entry + slack:
+        if abs(ask - entry) <= slack:
             return mt5.ORDER_TYPE_BUY, ask
-        if ask > entry:
+        if entry < ask:
             return mt5.ORDER_TYPE_BUY_LIMIT, entry
         return mt5.ORDER_TYPE_BUY_STOP, entry
-    if bid >= entry - slack:
+    if abs(bid - entry) <= slack:
         return mt5.ORDER_TYPE_SELL, bid
-    if bid < entry:
+    if entry > bid:
         return mt5.ORDER_TYPE_SELL_LIMIT, entry
     return mt5.ORDER_TYPE_SELL_STOP, entry
+
+
+def order_kind_from_type(order_type: int) -> str:
+    if order_type in (mt5.ORDER_TYPE_BUY, mt5.ORDER_TYPE_SELL):
+        return "market"
+    if order_type in (mt5.ORDER_TYPE_BUY_STOP, mt5.ORDER_TYPE_SELL_STOP):
+        return "stop"
+    return "limit"
+
+
+def tick_hits_entry(trail: dict, tick) -> bool:
+    entry = float(trail.get("signalEntry") or trail.get("entry") or 0)
+    side = str(trail.get("side") or "")
+    kind = str(trail.get("orderKind") or "limit")
+    bid = float(tick.bid or 0)
+    ask = float(tick.ask or 0)
+    last = float(getattr(tick, "last", 0) or 0)
+    if kind == "market":
+        return True
+    if side == "buy":
+        if kind == "stop":
+            return ask >= entry or last >= entry or bid >= entry
+        return ask <= entry or bid <= entry or (last > 0 and last <= entry)
+    if kind == "stop":
+        return bid <= entry or last <= entry or ask <= entry
+    return bid >= entry or ask >= entry or (last > 0 and last >= entry)
 
 
 def levels_wrong_side(side: str, entry: float, sl: float, tp: float) -> str | None:
@@ -525,6 +554,39 @@ def send_request(request: dict, modes: list[int]):
     return last
 
 
+def attach_desk_trail(
+    job: dict,
+    cfg: dict,
+    symbol: str,
+    entry: float,
+    sl: float,
+    tp: float,
+    order_kind: str,
+    ticket: int = 0,
+    virtual: bool = False,
+) -> None:
+    pending = order_kind != "market"
+    register_trail(
+        {
+            "accountId": cfg["id"],
+            "login": cfg.get("login"),
+            "signalId": job["signalId"],
+            "ticket": int(ticket or 0),
+            "symbol": symbol,
+            "side": job["side"],
+            "entry": entry,
+            "signalEntry": float(job["entry"]),
+            "originalSL": sl,
+            "originalTP": tp,
+            "orderKind": order_kind,
+            "pending": pending,
+            "virtual": bool(virtual),
+        }
+    )
+    if not pending:
+        notify_desk_entered(str(job.get("signalId") or ""), int(ticket or 0))
+
+
 def open_trade(job: dict, cfg: dict) -> tuple[str, int | None, str]:
     pair = str(job.get("pair") or "")
     equity_usd, currency, native, rate_note = account_size_usd(str(cfg.get("symbolSuffix") or ""))
@@ -535,12 +597,6 @@ def open_trade(job: dict, cfg: dict) -> tuple[str, int | None, str]:
             f"cannot convert {native:.0f} {currency} to USD ({rate_note}) — lot size not calculated",
         )
     sized = f"{native:,.0f} {currency} = ${equity_usd:,.2f} via {rate_note}"
-    if pair == "XAUUSD" and equity_usd < GOLD_MIN_USD:
-        return (
-            "skipped",
-            None,
-            f"{sized} is under ${GOLD_MIN_USD:.0f} — gold signals are not taken",
-        )
 
     symbol = resolve_symbol(pair, cfg["symbolSuffix"])
     if not symbol:
@@ -554,12 +610,6 @@ def open_trade(job: dict, cfg: dict) -> tuple[str, int | None, str]:
     pips = stop_pips(pair, job["entry"], job["stopLoss"])
     raw_lot = position_lots(equity_usd, pips, pair, risk_pct)
     lot = snap_lot(raw_lot, info)
-    if lot is None:
-        return (
-            "skipped",
-            None,
-            f"calculated {raw_lot:.4f} lot from {sized} @ {risk_pct:g}% / {pips:.0f} pips is below broker minimum {info.volume_min}",
-        )
     digits = int(info.digits)
     point = float(info.point)
     entry = round(float(job["entry"]), digits)
@@ -571,6 +621,22 @@ def open_trade(job: dict, cfg: dict) -> tuple[str, int | None, str]:
         return "error", None, f"10016 Invalid stops — {bad} (entry {entry}, sl {sl}, tp {tp})"
     order_type, price = order_type_for(side, entry, tick.bid, tick.ask, point)
     price = round(price, digits)
+    order_kind = order_kind_from_type(order_type)
+
+    if pair == "XAUUSD" and equity_usd < GOLD_MIN_USD:
+        attach_desk_trail(job, cfg, symbol, entry, sl, tp, order_kind, virtual=True)
+        return (
+            "skipped",
+            None,
+            f"{sized} is under ${GOLD_MIN_USD:.0f} — gold not opened on MT5. Card stays live and is tracked without a ticket.",
+        )
+    if lot is None:
+        attach_desk_trail(job, cfg, symbol, entry, sl, tp, order_kind, virtual=True)
+        return (
+            "skipped",
+            None,
+            f"calculated {raw_lot:.4f} lot from {sized} @ {risk_pct:g}% / {pips:.0f} pips is below broker minimum {info.volume_min}. Card stays live and is tracked without a ticket.",
+        )
 
     request = {
         "action": mt5.TRADE_ACTION_DEAL
@@ -600,28 +666,11 @@ def open_trade(job: dict, cfg: dict) -> tuple[str, int | None, str]:
     if result.retcode != mt5.TRADE_RETCODE_DONE:
         return "error", None, f"{result.retcode} {result.comment}"
     ticket = int(result.order or result.deal or 0)
-    kind = "market" if request["action"] == mt5.TRADE_ACTION_DEAL else "pending"
-    register_trail(
-        {
-            "accountId": cfg["id"],
-            "login": cfg.get("login"),
-            "signalId": job["signalId"],
-            "ticket": ticket,
-            "symbol": symbol,
-            "side": job["side"],
-            "entry": entry,
-            "signalEntry": float(job["entry"]),
-            "originalSL": sl,
-            "originalTP": tp,
-            "pending": kind == "pending",
-        }
-    )
-    if kind != "pending":
-        notify_desk_entered(str(job.get("signalId") or ""), ticket)
+    attach_desk_trail(job, cfg, symbol, entry, sl, tp, order_kind, ticket=ticket, virtual=False)
     return (
         "sent",
         ticket,
-        f"{kind} {job['side']} {lot} {symbol} @ {price} sl={sl} tp={tp} "
+        f"{order_kind} {job['side']} {lot} {symbol} @ {price} sl={sl} tp={tp} "
         f"(auto {risk_pct:g}% of {sized}, {pips:.0f} pip SL)",
     )
 
@@ -887,6 +936,78 @@ def pending_tp_tapped(trail: dict, tick, high: float | None, low: float | None) 
     return tick.bid <= tp or tick.ask <= tp or (low is not None and low <= tp)
 
 
+def manage_virtual_trails() -> None:
+    """Track limit / stop / market cards with no MT5 ticket (lot too small, gold skip, etc.)."""
+    store = load_trails()
+    if not store["trails"]:
+        return
+    kept = []
+    dirty = False
+    for trail in store["trails"]:
+        if not trail.get("virtual"):
+            kept.append(trail)
+            continue
+        symbol = str(trail.get("symbol") or "")
+        tick = mt5.symbol_info_tick(symbol) if symbol else None
+        if tick is None:
+            kept.append(trail)
+            continue
+        sid = str(trail.get("signalId") or "")
+        side = str(trail.get("side") or "")
+        buy = side == "buy"
+        entry = float(trail.get("signalEntry") or trail.get("entry") or 0)
+        sl = float(trail.get("originalSL") or 0)
+        tp = float(trail.get("originalTP") or 0)
+        risk = float(trail.get("risk") or 0)
+        if risk <= 0:
+            risk = abs(entry - sl)
+            trail["risk"] = risk
+        if trail.get("pending"):
+            if pending_tp_tapped(trail, tick, None, None):
+                notify_desk_cancel(sid, "Cancelled: TP was tapped before entry.")
+                dirty = True
+                continue
+            if tick_hits_entry(trail, tick):
+                trail["pending"] = False
+                trail["filledAt"] = now_iso()
+                notify_desk_entered(sid, 0)
+                dirty = True
+            else:
+                kept.append(trail)
+                continue
+        stage = int(trail.get("stage") or 0)
+        r1 = entry + risk if buy else entry - risk
+        r2 = entry + 2 * risk if buy else entry - 2 * risk
+        cur_sl = sl
+        if stage >= 1:
+            cur_sl = float(trail.get("beSl") or entry)
+        if stage >= 2:
+            cur_sl = r1
+        if tp and tick_prints(tick, tp, buy):
+            notify_desk_fill(sid, tp, "tp")
+            dirty = True
+            continue
+        sl_hit = tick.bid <= cur_sl or tick.ask <= cur_sl if buy else tick.bid >= cur_sl or tick.ask >= cur_sl
+        if cur_sl and sl_hit:
+            notify_desk_fill(sid, cur_sl, "sl")
+            dirty = True
+            continue
+        if stage < 2 and risk and tick_prints(tick, r2, buy):
+            trail["stage"] = 2
+            trail["halfTaken"] = True
+            notify_desk_sl(sid, r1, "lock1r")
+            dirty = True
+        elif stage < 1 and risk and tick_prints(tick, r1, buy):
+            trail["stage"] = 1
+            trail["beSl"] = entry
+            notify_desk_sl(sid, entry, "be")
+            dirty = True
+        kept.append(trail)
+    if dirty or len(kept) != len(store["trails"]):
+        store["trails"] = kept
+        save_trails(store)
+
+
 def manage_pending_invalidation() -> None:
     """A pending order will not self-cancel when price hits TP. Pull it and kill the card."""
     store = load_trails()
@@ -895,6 +1016,9 @@ def manage_pending_invalidation() -> None:
     kept = []
     dirty = False
     for trail in store["trails"]:
+        if trail.get("virtual"):
+            kept.append(trail)
+            continue
         if not trail.get("pending"):
             kept.append(trail)
             continue
@@ -1453,6 +1577,9 @@ def manage_trails() -> None:
     kept = []
     dirty = False
     for trail in store["trails"]:
+        if trail.get("virtual"):
+            kept.append(trail)
+            continue
         orders, positions = matching_entities(trail["signalId"], trail)
         pos = positions[0] if positions else None
         if pos is None:
@@ -1793,10 +1920,7 @@ def desk_has_live_tickets() -> bool:
     if not isinstance(data, dict):
         return False
     for row in data.get("signals") or []:
-        if row.get("status") != "active":
-            continue
-        mt5row = row.get("mt5") if isinstance(row.get("mt5"), dict) else {}
-        if mt5row.get("status") == "sent":
+        if row.get("status") == "active":
             return True
     return False
 
@@ -1877,6 +2001,7 @@ def main() -> int:
                     log(f"pnl: {exc}")
                 try:
                     manage_pending_invalidation()
+                    manage_virtual_trails()
                     manage_trails()
                     reconcile_closed_signals()
                 except Exception as exc:
@@ -1930,6 +2055,7 @@ def main() -> int:
                 log(f"pnl: {exc}")
             try:
                 manage_pending_invalidation()
+                manage_virtual_trails()
                 manage_trails()
                 reconcile_closed_signals()
             except Exception as exc:

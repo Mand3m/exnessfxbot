@@ -191,8 +191,13 @@ main h4 {
 .results-panel p,
 .results-panel td,
 .results-panel span,
-.results-panel .num {
+.results-panel .num,
+.results-panel a {
   color: #ffffff !important;
+}
+
+.results-panel a:hover {
+  color: #ffd700 !important;
 }
 
 .results-panel .results-profit {
