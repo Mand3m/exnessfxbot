@@ -30,6 +30,15 @@ const SOCIAL = [
       </svg>
     ),
   },
+  {
+    label: "YouTube",
+    href: "https://www.youtube.com/@ForexTradingConsultants",
+    icon: (
+      <svg viewBox="0 0 24 24" className="h-5 w-5 fill-current" aria-hidden>
+        <path d="M23.5 6.2a3.02 3.02 0 0 0-2.13-2.14C19.5 3.7 12 3.7 12 3.7s-7.5 0-9.37.36A3.02 3.02 0 0 0 .5 6.2 31.6 31.6 0 0 0 .14 12a31.6 31.6 0 0 0 .36 5.8 3.02 3.02 0 0 0 2.13 2.14c1.87.36 9.37.36 9.37.36s7.5 0 9.37-.36a3.02 3.02 0 0 0 2.13-2.14A31.6 31.6 0 0 0 23.86 12a31.6 31.6 0 0 0-.36-5.8ZM9.75 15.57V8.43L15.84 12l-6.09 3.57Z" />
+      </svg>
+    ),
+  },
 ] as const;
 
 export function Footer() {
