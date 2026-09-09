@@ -54,3 +54,15 @@ next-env.d.ts
 # python bytecode
 __pycache__/
 *.pyc
+
+# mt5 terminals / local logs
+mt5-terminals/
+data/mt5-terminals.log
+scripts/DeskBoot.log
+
+# MT5 compiled experts and terminal logs
+scripts/*.ex5
+scripts/*.log
+
+# MT5 tester configs (contain account logins)
+scripts/tester_*.ini

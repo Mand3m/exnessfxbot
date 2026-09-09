@@ -101,11 +101,7 @@ void ExportFib()
                              dt.year, dt.mon, dt.day, dt.hour, dt.min, dt.sec);
    string name = LastFiboName();
    if(name == "")
-   {
-      WriteJson(FileName, "{\n  \"at\": \"" + iso + "\",\n  \"symbol\": \"" + _Symbol +
-                "\",\n  \"ok\": false,\n  \"reason\": \"no fibonacci on this chart\"\n}\n");
       return;
-   }
    double p0 = ObjectGetDouble(0, name, OBJPROP_PRICE, 0);
    double p1 = ObjectGetDouble(0, name, OBJPROP_PRICE, 1);
    if(p0 <= 0 || p1 <= 0)

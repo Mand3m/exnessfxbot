@@ -1,5 +1,5 @@
 #property copyright "ExnessfxBot"
-#property version   "1.10"
+#property version   "1.11"
 #property description "Writes Fib 0.5→Entry and 1.0→SL to Common Files for the ExnessfxBot desk."
 #property indicator_chart_window
 #property indicator_plots 0
@@ -35,9 +35,46 @@ int OnCalculate(const int rates_total,
    return rates_total;
 }
 
+datetime g_goldTry = 0;
+
+void EnsureGoldEa()
+{
+   if(StringFind(_Symbol, "XAUUSD") < 0)
+      return;
+   datetime now = TimeLocal();
+   if(g_goldTry != 0 && now - g_goldTry < 15)
+      return;
+   g_goldTry = now;
+   if(!FileIsExist("exnessfxbot-gold-ea.on", FILE_COMMON))
+      return;
+   long want = 0;
+   int h = FileOpen("exnessfxbot-gold-ea.on", FILE_READ | FILE_TXT | FILE_ANSI | FILE_COMMON | FILE_SHARE_READ);
+   if(h != INVALID_HANDLE)
+   {
+      string line = FileReadString(h);
+      FileClose(h);
+      want = StringToInteger(line);
+   }
+   if(want > 0 && AccountInfoInteger(ACCOUNT_LOGIN) != want)
+      return;
+   if(GlobalVariableCheck("H1R5_chart"))
+   {
+      long existing = (long)GlobalVariableGet("H1R5_chart");
+      if(existing > 0 && ChartSymbol(existing) != "")
+         return;
+   }
+   long ch = ChartOpen(_Symbol, PERIOD_M5);
+   if(ch == 0)
+      return;
+   if(!ChartApplyTemplate(ch, "H1RangeM5.tpl"))
+      Print("H1RangeM5.tpl not applied on ", _Symbol, " — drag XAUUSD_H1Range_M5Sweep onto the new M5 gold chart");
+   GlobalVariableSet("H1R5_chart", (double)ch);
+}
+
 void OnTimer()
 {
    ExportFib();
+   EnsureGoldEa();
 }
 
 void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
@@ -124,8 +161,13 @@ void ExportFib()
    string iso = IsoNow();
    if(name == "")
    {
-      WriteJson(FileName, "{\n  \"at\": \"" + iso + "\",\n  \"symbol\": \"" + _Symbol +
-                "\",\n  \"ok\": false,\n  \"reason\": \"no fibonacci on this chart\"\n}\n");
+      // Do not clobber the shared desk file. Empty charts on other terminals
+      // were wiping a good drawing every 400ms.
+      string pairMiss = DeskPair();
+      if(pairMiss != "")
+         WriteJson("exnessfxbot-fib-" + pairMiss + ".idle.json",
+                   "{\n  \"at\": \"" + iso + "\",\n  \"symbol\": \"" + _Symbol +
+                   "\",\n  \"ok\": false,\n  \"reason\": \"no fibonacci on this chart\"\n}\n");
       return;
    }
 
