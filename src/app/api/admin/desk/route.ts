@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
-import { listUsers, setUserPlan } from "@/lib/auth";
+import { grantPack, revokePack, setUserPlan } from "@/lib/auth";
 import { decidePayment } from "@/lib/payments";
+import { isMaterialPack } from "@/lib/packages";
 import {
   isDeskUnlocked,
   lockDesk,
@@ -9,6 +10,8 @@ import {
 import {
   deleteSignal,
   getSignalById,
+  listActiveSignals,
+  listDeskOrders,
   publishSignal,
   resolveSignal,
   reviseLevels,
@@ -20,6 +23,7 @@ import type { PairId, Side } from "@/lib/signals";
 import {
   deleteMt5Account,
   enabledMt5Accounts,
+  lastMt5JobForSignal,
   mt5PublishNote,
   publicMt5State,
   saveMt5Account,
@@ -27,11 +31,13 @@ import {
 } from "@/lib/mt5";
 
 function back(req: Request, form: FormData, query: string) {
-  const next = String(form.get("next") || "/admin");
-  const path = next.startsWith("/") ? next.split("?")[0] : "/admin";
-  const url = new URL(path === "/" || path === "/admin" ? path : "/admin", req.url);
-  url.search = query;
-  return NextResponse.redirect(url, 303);
+  const next = String(form.get("next") || "/desk");
+  const path = next.startsWith("/") ? next.split("?")[0] : "/desk";
+  const dest = `${path === "/" || path === "/desk" ? path : "/desk"}${query ? `?${query}` : ""}`;
+  return new NextResponse(null, {
+    status: 303,
+    headers: { Location: dest },
+  });
 }
 
 function formAction(form: FormData) {
@@ -40,13 +46,41 @@ function formAction(form: FormData) {
   return raw;
 }
 
+export async function GET() {
+  if (!(await isDeskUnlocked())) {
+    return NextResponse.json({ ok: false, locked: true });
+  }
+  const pending = listActiveSignals();
+  const jobs: Record<string, { status: string; ticket?: number; message?: string } | null> = {};
+  for (const row of pending) {
+    const job = lastMt5JobForSignal(row.id);
+    jobs[row.id] = job
+      ? { status: job.status, ticket: job.ticket, message: job.message }
+      : null;
+  }
+  const mt5 = publicMt5State();
+  return NextResponse.json({
+    ok: true,
+    pending,
+    orders: listDeskOrders(),
+    jobs,
+    mt5: {
+      executorRunning: mt5.executorRunning,
+      executorStale: mt5.executorStale,
+      status: mt5.status,
+      pnl: mt5.pnl,
+      jobs: mt5.jobs,
+    },
+  });
+}
+
 export async function POST(req: Request) {
   const form = await req.formData();
   const action = formAction(form);
 
   if (action === "unlock") {
     if (!verifyAdminPassword(String(form.get("password") || ""))) {
-      return back(req, form, "error=Wrong+password.+Use+exnessfxbot-admin");
+      return back(req, form, "error=Wrong+password");
     }
     await unlockDesk();
     return back(req, form, "ok=unlocked");
@@ -76,17 +110,34 @@ export async function POST(req: Request) {
     if (![entry, takeProfit, stopLoss].every((n) => Number.isFinite(n) && n > 0)) {
       return back(req, form, "error=Enter+SL%2C+TP+and+Entry+prices");
     }
-    const openOnMt5 = String(form.get("openOnMt5") || "") === "1";
-    const signal = publishSignal({ pair, side, entry, takeProfit, stopLoss, openOnMt5 });
+    const mt5TicketRaw = Number(form.get("mt5Ticket"));
+    const mt5Ticket = Number.isFinite(mt5TicketRaw) && mt5TicketRaw > 0 ? mt5TicketRaw : undefined;
+    const alreadyLive = String(form.get("alreadyLive") || "") === "1" || mt5Ticket != null;
+    // Never double-open a trade that FibToDesk marked as already live on MT5.
+    const openOnMt5 = !alreadyLive && String(form.get("openOnMt5") || "") === "1";
+    const signal = publishSignal({
+      pair,
+      side,
+      entry,
+      takeProfit,
+      stopLoss,
+      openOnMt5,
+      mt5Ticket,
+      alreadyLive,
+    });
     const queued = publicMt5State().jobs.filter((j) => j.signalId === signal.id && j.action === "open");
     const jobs = await waitForMt5Jobs(queued.map((j) => j.id));
+    const note = alreadyLive && !openOnMt5
+      ? (mt5Ticket
+          ? ` Linked to live MT5 ticket ${mt5Ticket} (no new open).`
+          : " Trade already live on MT5 — cards only (no new open).")
+      : mt5PublishNote(jobs.length ? jobs : queued, enabledMt5Accounts().length);
     return back(
       req,
       form,
       "ok=" +
         encodeURIComponent(
-          "Card updated. Premium sees it now, regular in 10 minutes." +
-            mt5PublishNote(jobs.length ? jobs : queued, enabledMt5Accounts().length)
+          "Card updated. Premium sees it now, regular in 10 minutes." + note
         )
     );
   }
@@ -208,12 +259,36 @@ export async function POST(req: Request) {
     if (!result.ok) {
       return back(req, form, "error=" + encodeURIComponent(result.error));
     }
+    const packName = result.payment.packName;
+    const material = isMaterialPack(result.payment.packId);
     return back(
       req,
       form,
       action === "paymentApprove"
-        ? "ok=" + encodeURIComponent("Payment approved. Member is premium and will get instant cards plus email alerts.")
+        ? "ok=" +
+            encodeURIComponent(
+              material
+                ? `Payment approved. ${packName} is unlocked on ${result.payment.email}.`
+                : "Payment approved. Member is premium and will get instant cards plus email alerts."
+            )
         : "ok=Payment+rejected"
+    );
+  }
+
+  if (action === "grantPack" || action === "revokePack") {
+    const userId = String(form.get("userId") || "");
+    const packId = String(form.get("packId") || "");
+    if (!isMaterialPack(packId)) {
+      return back(req, form, "error=Unknown+material+pack");
+    }
+    const user = action === "grantPack" ? grantPack(userId, packId) : revokePack(userId, packId);
+    if (!user) return back(req, form, "error=Member+not+found");
+    return back(
+      req,
+      form,
+      action === "grantPack"
+        ? "ok=" + encodeURIComponent(`Unlocked ${packId} for ${user.email}`)
+        : "ok=" + encodeURIComponent(`Removed ${packId} from ${user.email}`)
     );
   }
 

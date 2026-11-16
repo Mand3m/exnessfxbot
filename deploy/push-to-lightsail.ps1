@@ -31,6 +31,8 @@ function Get-DotEnvValue([string]$Path, [string]$KeyName) {
   return ""
 }
 
+$staffEmail = Get-DotEnvValue $LocalEnv "STAFF_EMAIL"
+$staffPass = Get-DotEnvValue $LocalEnv "STAFF_PASSWORD"
 $admin = Get-DotEnvValue $LocalEnv "ADMIN_SECRET"
 $session = Get-DotEnvValue $LocalEnv "SESSION_SECRET"
 $sync = Get-DotEnvValue $LocalEnv "LIVE_SYNC_SECRET"
@@ -48,6 +50,8 @@ if (-not $tgChannel) { $tgChannel = "@TradeBossFx" }
 if (-not $smtpPort) { $smtpPort = "587" }
 if (-not $smtpSecure) { $smtpSecure = "0" }
 if (-not $smtpFrom -and $smtpUser) { $smtpFrom = "Forex Trading Consultants <$smtpUser>" }
+if (-not $staffEmail) { $staffEmail = "info@forextradingconsultants.com" }
+if (-not $staffPass) { $staffPass = $admin }
 
 $envLines = @(
   "SITE_URL=https://forextradingconsultants.com"
@@ -56,7 +60,26 @@ $envLines = @(
   "SESSION_SECRET=$session"
   "LIVE_SYNC_SECRET=$sync"
   "TELEGRAM_CHANNEL=$tgChannel"
+  "STAFF_EMAIL=$staffEmail"
+  "STAFF_PASSWORD=$staffPass"
 )
+$momoKey = Get-DotEnvValue $LocalEnv "MOMO_COLLECTION_SUBSCRIPTION_KEY"
+$momoUser = Get-DotEnvValue $LocalEnv "MOMO_API_USER"
+$momoApi = Get-DotEnvValue $LocalEnv "MOMO_API_KEY"
+$momoTarget = Get-DotEnvValue $LocalEnv "MOMO_TARGET_ENVIRONMENT"
+$momoBase = Get-DotEnvValue $LocalEnv "MOMO_BASE_URL"
+if (-not $momoTarget) { $momoTarget = "sandbox" }
+if (-not $momoBase) { $momoBase = "https://sandbox.momodeveloper.mtn.com" }
+if ($momoKey -and $momoUser -and $momoApi) {
+  $envLines += @(
+    "MOMO_COLLECTION_SUBSCRIPTION_KEY=$momoKey"
+    "MOMO_API_USER=$momoUser"
+    "MOMO_API_KEY=$momoApi"
+    "MOMO_TARGET_ENVIRONMENT=$momoTarget"
+    "MOMO_BASE_URL=$momoBase"
+    "MOMO_CURRENCY=UGX"
+  )
+}
 if ($smtpHost -and $smtpUser -and $smtpPass) {
   $envLines += @(
     "SMTP_HOST=$smtpHost"
@@ -75,7 +98,8 @@ Push-Location $LocalRoot
 try {
   tar -czf $Tar `
     --exclude=node_modules `
-    --exclude=.next `
+    --exclude=.next/cache `
+    --exclude=.next/dev `
     --exclude=.git `
     --exclude=.env `
     --exclude=.env.local `
@@ -94,9 +118,30 @@ try {
     --exclude=data/telegram-queue.json `
     --exclude=data/users.json `
     --exclude=data/payments.json `
+    --exclude=data/beginner-pack/_extract `
     --exclude=data/last-verify-link.txt `
     --exclude=scripts/__pycache__ `
     --exclude=mobile `
+    --exclude=mt5-terminals `
+    --exclude=data/mentorship `
+    --exclude=data/beginner-pack `
+    --exclude=data/h1-* `
+    --exclude=data/h1m5* `
+    --exclude=data/m5-* `
+    --exclude=data/H1* `
+    --exclude=data/M5* `
+    --exclude=data/ReportTester* `
+    --exclude=data/*.htm `
+    --exclude=data/*.log `
+    --exclude=data/mt5-* `
+    --exclude=data/watch_mt5* `
+    --exclude=data/TesterGraph* `
+    --exclude=data/health-check* `
+    --exclude=data/bt-* `
+    --exclude=data/signals.json `
+    --exclude=data/notices.json `
+    --exclude=data/push-*.json `
+    --exclude=data/mt5.json `
     --exclude=*.pem `
     .
 } finally {

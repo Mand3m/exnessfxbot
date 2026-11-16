@@ -9,7 +9,8 @@ int OnInit()
 {
    ChartSetInteger(0, CHART_EVENT_OBJECT_CREATE, true);
    ChartSetInteger(0, CHART_EVENT_OBJECT_DELETE, true);
-   EventSetMillisecondTimer(400);
+   EventSetTimer(1);
+   Print("FibToDeskEA started on ", _Symbol);
    ExportFib();
    return INIT_SUCCEEDED;
 }
@@ -101,7 +102,14 @@ void ExportFib()
                              dt.year, dt.mon, dt.day, dt.hour, dt.min, dt.sec);
    string name = LastFiboName();
    if(name == "")
+   {
+      string pairMiss = DeskPair();
+      if(pairMiss != "")
+         WriteJson("exnessfxbot-fib-" + pairMiss + ".idle.json",
+                   "{\n  \"at\": \"" + iso + "\",\n  \"symbol\": \"" + _Symbol +
+                   "\",\n  \"ok\": false,\n  \"reason\": \"no fibonacci on this chart\"\n}\n");
       return;
+   }
    double p0 = ObjectGetDouble(0, name, OBJPROP_PRICE, 0);
    double p1 = ObjectGetDouble(0, name, OBJPROP_PRICE, 1);
    if(p0 <= 0 || p1 <= 0)

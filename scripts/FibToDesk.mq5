@@ -1,18 +1,21 @@
 #property copyright "ExnessfxBot"
-#property version   "1.11"
-#property description "Writes Fib 0.5→Entry and 1.0→SL to Common Files for the ExnessfxBot desk."
+#property version   "1.20"
+#property description "Writes Fib 0.5→Entry / 1.0→SL, and manual limit/market orders, to Common Files for the desk."
 #property indicator_chart_window
 #property indicator_plots 0
 #property indicator_buffers 0
 
 input string FileName = "exnessfxbot-fib.json";
+input int    DeskMagic = 260818; // skip desk-executor tickets (fx:*)
 
 int OnInit()
 {
    ChartSetInteger(0, CHART_EVENT_OBJECT_CREATE, true);
    ChartSetInteger(0, CHART_EVENT_OBJECT_DELETE, true);
    EventSetMillisecondTimer(400);
+   Print("FibToDesk started on ", _Symbol, " ", EnumToString((ENUM_TIMEFRAMES)Period()));
    ExportFib();
+   ExportOrders();
    return INIT_SUCCEEDED;
 }
 
@@ -35,46 +38,10 @@ int OnCalculate(const int rates_total,
    return rates_total;
 }
 
-datetime g_goldTry = 0;
-
-void EnsureGoldEa()
-{
-   if(StringFind(_Symbol, "XAUUSD") < 0)
-      return;
-   datetime now = TimeLocal();
-   if(g_goldTry != 0 && now - g_goldTry < 15)
-      return;
-   g_goldTry = now;
-   if(!FileIsExist("exnessfxbot-gold-ea.on", FILE_COMMON))
-      return;
-   long want = 0;
-   int h = FileOpen("exnessfxbot-gold-ea.on", FILE_READ | FILE_TXT | FILE_ANSI | FILE_COMMON | FILE_SHARE_READ);
-   if(h != INVALID_HANDLE)
-   {
-      string line = FileReadString(h);
-      FileClose(h);
-      want = StringToInteger(line);
-   }
-   if(want > 0 && AccountInfoInteger(ACCOUNT_LOGIN) != want)
-      return;
-   if(GlobalVariableCheck("H1R5_chart"))
-   {
-      long existing = (long)GlobalVariableGet("H1R5_chart");
-      if(existing > 0 && ChartSymbol(existing) != "")
-         return;
-   }
-   long ch = ChartOpen(_Symbol, PERIOD_M5);
-   if(ch == 0)
-      return;
-   if(!ChartApplyTemplate(ch, "H1RangeM5.tpl"))
-      Print("H1RangeM5.tpl not applied on ", _Symbol, " — drag XAUUSD_H1Range_M5Sweep onto the new M5 gold chart");
-   GlobalVariableSet("H1R5_chart", (double)ch);
-}
-
 void OnTimer()
 {
    ExportFib();
-   EnsureGoldEa();
+   ExportOrders();
 }
 
 void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
@@ -136,6 +103,27 @@ string DeskPair()
    return "";
 }
 
+bool SameDeskSymbol(const string sym)
+{
+   string a = sym;
+   string b = _Symbol;
+   StringToUpper(a);
+   StringToUpper(b);
+   string pair = DeskPair();
+   if(pair == "")
+      return false;
+   return (StringFind(a, pair) >= 0 && StringFind(b, pair) >= 0);
+}
+
+bool IsDeskManaged(const long magic, const string comment)
+{
+   if(magic == DeskMagic)
+      return true;
+   if(StringFind(comment, "fx:") == 0)
+      return true;
+   return false;
+}
+
 void WriteJson(const string file, const string json)
 {
    int h = FileOpen(file, FILE_WRITE | FILE_REWRITE | FILE_TXT | FILE_ANSI | FILE_COMMON | FILE_SHARE_READ);
@@ -187,6 +175,8 @@ void ExportFib()
    json += "  \"at\": \"" + iso + "\",\n";
    json += "  \"symbol\": \"" + _Symbol + "\",\n";
    json += "  \"ok\": true,\n";
+   json += "  \"source\": \"fib\",\n";
+   json += "  \"alreadyLive\": false,\n";
    json += "  \"name\": \"" + name + "\",\n";
    json += "  \"side\": \"" + side + "\",\n";
    json += "  \"level05\": " + DoubleToString(level05, _Digits) + ",\n";
@@ -199,4 +189,122 @@ void ExportFib()
    string pair = DeskPair();
    if(pair != "")
       WriteJson("exnessfxbot-fib-" + pair + ".json", json);
+}
+
+void WriteOrderJson(const string kind, const string side, const double entry, const double sl, const double tp, const ulong ticket)
+{
+   string pair = DeskPair();
+   if(pair == "")
+      return;
+   string iso = IsoNow();
+   double stop = sl;
+   double take = tp;
+   if(stop <= 0)
+      return;
+   if(take <= 0)
+      take = entry + 2.5 * (entry - stop);
+
+   string json = "{\n";
+   json += "  \"at\": \"" + iso + "\",\n";
+   json += "  \"symbol\": \"" + _Symbol + "\",\n";
+   json += "  \"ok\": true,\n";
+   json += "  \"source\": \"order\",\n";
+   json += "  \"alreadyLive\": true,\n";
+   json += "  \"kind\": \"" + kind + "\",\n";
+   json += "  \"ticket\": " + IntegerToString((int)ticket) + ",\n";
+   json += "  \"side\": \"" + side + "\",\n";
+   json += "  \"entry\": " + DoubleToString(entry, _Digits) + ",\n";
+   json += "  \"stopLoss\": " + DoubleToString(stop, _Digits) + ",\n";
+   json += "  \"takeProfit\": " + DoubleToString(take, _Digits) + ",\n";
+   json += "  \"level05\": " + DoubleToString(entry, _Digits) + ",\n";
+   json += "  \"level1\": " + DoubleToString(stop, _Digits) + "\n";
+   json += "}\n";
+
+   WriteJson("exnessfxbot-order.json", json);
+   WriteJson("exnessfxbot-order-" + pair + ".json", json);
+}
+
+void ExportOrders()
+{
+   string pair = DeskPair();
+   if(pair == "")
+      return;
+
+   datetime bestTime = 0;
+   ulong bestTicket = 0;
+   string bestKind = "";
+   string bestSide = "";
+   double bestEntry = 0;
+   double bestSl = 0;
+   double bestTp = 0;
+
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = OrderGetTicket(i);
+      if(ticket == 0)
+         continue;
+      if(!SameDeskSymbol(OrderGetString(ORDER_SYMBOL)))
+         continue;
+      if(IsDeskManaged(OrderGetInteger(ORDER_MAGIC), OrderGetString(ORDER_COMMENT)))
+         continue;
+      ENUM_ORDER_TYPE typ = (ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
+      string side = "";
+      string kind = "limit";
+      if(typ == ORDER_TYPE_BUY_LIMIT || typ == ORDER_TYPE_BUY_STOP || typ == ORDER_TYPE_BUY_STOP_LIMIT)
+         side = "buy";
+      else if(typ == ORDER_TYPE_SELL_LIMIT || typ == ORDER_TYPE_SELL_STOP || typ == ORDER_TYPE_SELL_STOP_LIMIT)
+         side = "sell";
+      else
+         continue;
+      if(typ == ORDER_TYPE_BUY_STOP || typ == ORDER_TYPE_SELL_STOP ||
+         typ == ORDER_TYPE_BUY_STOP_LIMIT || typ == ORDER_TYPE_SELL_STOP_LIMIT)
+         kind = "stop";
+      datetime t = (datetime)OrderGetInteger(ORDER_TIME_SETUP);
+      if(t < bestTime)
+         continue;
+      bestTime = t;
+      bestTicket = ticket;
+      bestKind = kind;
+      bestSide = side;
+      bestEntry = OrderGetDouble(ORDER_PRICE_OPEN);
+      bestSl = OrderGetDouble(ORDER_SL);
+      bestTp = OrderGetDouble(ORDER_TP);
+   }
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0)
+         continue;
+      if(!SameDeskSymbol(PositionGetString(POSITION_SYMBOL)))
+         continue;
+      if(IsDeskManaged(PositionGetInteger(POSITION_MAGIC), PositionGetString(POSITION_COMMENT)))
+         continue;
+      string side = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? "buy" : "sell";
+      datetime t = (datetime)PositionGetInteger(POSITION_TIME);
+      // Prefer an open position over an older pending for the same chart.
+      if(bestKind != "" && bestKind != "market" && t < bestTime)
+         continue;
+      if(t < bestTime && bestKind == "market")
+         continue;
+      bestTime = t;
+      bestTicket = ticket;
+      bestKind = "market";
+      bestSide = side;
+      bestEntry = PositionGetDouble(POSITION_PRICE_OPEN);
+      bestSl = PositionGetDouble(POSITION_SL);
+      bestTp = PositionGetDouble(POSITION_TP);
+   }
+
+   if(bestTicket == 0 || bestEntry <= 0 || bestSide == "")
+   {
+      string iso = IsoNow();
+      string miss = "{\n  \"at\": \"" + iso + "\",\n  \"symbol\": \"" + _Symbol +
+                   "\",\n  \"ok\": false,\n  \"reason\": \"no manual limit/market on this chart\",\n" +
+                   "  \"source\": \"order\",\n  \"alreadyLive\": false\n}\n";
+      WriteJson("exnessfxbot-order-" + pair + ".json", miss);
+      WriteJson("exnessfxbot-order-" + pair + ".idle.json", miss);
+      return;
+   }
+   WriteOrderJson(bestKind, bestSide, bestEntry, bestSl, bestTp, bestTicket);
 }

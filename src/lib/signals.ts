@@ -294,6 +294,18 @@ export function listSignals(): Signal[] {
     .filter((s): s is Signal => Boolean(s));
 }
 
+/** Newest desk tickets first, including filled/cancelled — not just the 4 live cards. */
+export function listDeskOrders(limit = 40): Signal[] {
+  const store = ensureStore();
+  return [...(store.signals || [])]
+    .sort((a, b) => {
+      const tb = Date.parse(b.updatedAt || b.publishedAt || b.from || "") || 0;
+      const ta = Date.parse(a.updatedAt || a.publishedAt || a.from || "") || 0;
+      return tb - ta;
+    })
+    .slice(0, Math.max(1, limit));
+}
+
 function revisionsOf(signal: Signal): LevelRevision[] {
   if (Array.isArray(signal.levelRevisions) && signal.levelRevisions.length) {
     return signal.levelRevisions;
@@ -564,7 +576,16 @@ export function publishSignal(input: {
   takeProfit: number;
   stopLoss: number;
   openOnMt5?: boolean;
+  /** Manual/limit already placed on MT5 — stamp ticket, skip open job. */
+  mt5Ticket?: number;
+  alreadyLive?: boolean;
 }): Signal {
+  const ticket =
+    Number.isFinite(input.mt5Ticket) && Number(input.mt5Ticket) > 0
+      ? Number(input.mt5Ticket)
+      : undefined;
+  const alreadyLive = Boolean(input.alreadyLive) || ticket != null;
+  const now = new Date().toISOString();
   const created = upsertSignal({
     pair: input.pair,
     side: input.side,
@@ -572,8 +593,63 @@ export function publishSignal(input: {
     entry: input.entry,
     takeProfit: input.takeProfit,
     stopLoss: input.stopLoss,
+    ...(alreadyLive
+      ? {
+          filledEntry: input.entry,
+          enteredAt: now,
+          mt5: {
+            status: "sent",
+            message: ticket
+              ? `already live on MT5 (ticket ${ticket}) — cards only`
+              : "already live on MT5 — cards only (no new open job)",
+            ticket,
+            at: now,
+          },
+        }
+      : {}),
   });
   enqueueMt5Open(created, input.openOnMt5);
+  enqueueTelegramSignal(created);
+  const snapshot = {
+    pair: created.pair,
+    side: created.side,
+    entry: created.entry,
+    takeProfit: created.takeProfit,
+    stopLoss: created.stopLoss,
+  };
+  void Promise.all(
+    listPremiumUsers().map((user) => sendSignalAlert(user.email, snapshot).catch(() => null))
+  );
+  return created;
+}
+
+/** Gold EA (and other auto) fills that are already live on MT5. Website + Telegram only. */
+export function publishEaSignal(input: {
+  pair: PairId;
+  side: Side;
+  entry: number;
+  takeProfit: number;
+  stopLoss: number;
+  ticket?: number;
+}): Signal {
+  const now = new Date().toISOString();
+  const created = upsertSignal({
+    pair: input.pair,
+    side: input.side,
+    status: "active",
+    entry: input.entry,
+    takeProfit: input.takeProfit,
+    stopLoss: input.stopLoss,
+    filledEntry: input.entry,
+    enteredAt: now,
+    note: "H1 range M5 sweep",
+    mt5: {
+      status: "sent",
+      message: "market H1RngM5",
+      ticket: input.ticket,
+      at: now,
+    },
+  });
   enqueueTelegramSignal(created);
   const snapshot = {
     pair: created.pair,
@@ -607,6 +683,8 @@ export function upsertSignal(input: Partial<Signal> & { pair: PairId; side: Side
     note: input.note,
     publishedAt: now,
     updatedAt: now,
+    enteredAt: input.enteredAt,
+    mt5: input.mt5,
     levelRevisions: [
       {
         stopLoss: Number(input.stopLoss || 0),
@@ -744,13 +822,13 @@ export async function settleLiveOrders(): Promise<number> {
       latest.status = "cancelled";
       latest.updatedAt = new Date().toISOString();
       latest.note = "Cancelled: TP was tapped before entry.";
-      enqueueMt5Cancel(latest.id);
+      enqueueMt5Cancel(latest.id, latest.pair, latest.side);
       changed += 1;
       continue;
     }
     if (hit === "tp" || hit === "sl") {
       applyFill(store, latest, hit === "tp" ? latest.takeProfit : latest.stopLoss);
-      enqueueMt5Cancel(latest.id);
+      enqueueMt5Cancel(latest.id, latest.pair, latest.side);
       changed += 1;
       continue;
     }
@@ -761,11 +839,11 @@ export async function settleLiveOrders(): Promise<number> {
         latest.status = "cancelled";
         latest.updatedAt = new Date().toISOString();
         latest.note = "Cancelled: TP was tapped before entry.";
-        enqueueMt5Cancel(latest.id);
+        enqueueMt5Cancel(latest.id, latest.pair, latest.side);
         changed += 1;
       } else if (fromLast === "tp" || fromLast === "sl") {
         applyFill(store, latest, fromLast === "tp" ? latest.takeProfit : latest.stopLoss);
-        enqueueMt5Cancel(latest.id);
+        enqueueMt5Cancel(latest.id, latest.pair, latest.side);
         changed += 1;
       }
     }
@@ -818,18 +896,20 @@ export function resolveSignal(
     applyFill(store, row, filledExit ?? row.entry);
     row.note = note || "Filled at market.";
     store.monthly = monthlyFromLedger(store.pipLedger);
-    enqueueMt5Cancel(row.id);
+    enqueueMt5Cancel(row.id, row.pair, row.side);
     saveStore(store);
     return row;
   }
   if (status === "filled") {
     applyFill(store, row, filledExit ?? row.takeProfit);
+    if (note) row.note = note;
     store.monthly = monthlyFromLedger(store.pipLedger);
+    enqueueMt5Cancel(row.id, row.pair, row.side);
   } else {
     row.status = "cancelled";
     row.updatedAt = new Date().toISOString();
     row.note = note || "Cancelled";
-    enqueueMt5Cancel(row.id);
+    enqueueMt5Cancel(row.id, row.pair, row.side);
   }
   saveStore(store);
   return row;
@@ -837,11 +917,12 @@ export function resolveSignal(
 
 export function deleteSignal(id: string): boolean {
   const store = ensureStore();
+  const row = store.signals.find((s) => s.id === id);
   const next = store.signals.filter((s) => s.id !== id);
   if (next.length === store.signals.length) return false;
   store.signals = next;
   saveStore(store);
-  enqueueMt5Cancel(id);
+  enqueueMt5Cancel(id, row?.pair, row?.side);
   return true;
 }
 

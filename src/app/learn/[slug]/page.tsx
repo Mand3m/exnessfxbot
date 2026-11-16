@@ -6,7 +6,7 @@ import { SiteBasics } from "@/components/SiteBasics";
 
 type Props = { params: Promise<{ slug: string }> };
 
-const MENTORSHIP_HREF = "/premium?pay=mentorship";
+const MENTORSHIP_HREF = "/mentorship?tab=mentorship";
 
 function renderLinked(text: string) {
   const parts = text.split(/(\*\*[^*]+\*\*)/g);

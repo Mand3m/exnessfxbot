@@ -5,16 +5,21 @@ import { AuthForm } from "@/components/AuthForm";
 export const metadata: Metadata = { title: "Log in" };
 export const dynamic = "force-dynamic";
 
-type Props = { searchParams: Promise<{ verified?: string; error?: string; reset?: string }> };
+type Props = {
+  searchParams: Promise<{ verified?: string; error?: string; reset?: string; pack?: string; next?: string }>;
+};
 
 export default async function LoginPage({ searchParams }: Props) {
   const q = await searchParams;
+  const joinQs = new URLSearchParams();
+  if (q.pack) joinQs.set("pack", q.pack);
+  if (q.next) joinQs.set("next", q.next);
+  const joinHref = joinQs.size ? `/register?${joinQs.toString()}` : "/register";
   return (
     <div className="mx-auto max-w-md px-4 py-8 sm:py-16">
       <h1 className="text-3xl font-semibold tracking-tight">Log in</h1>
       <p className="mt-2 text-sm text-muted">
-        Regular accounts see signal updates after 10 minutes. Premium accounts see
-        them immediately.
+        Use the email and password you registered with.
       </p>
       {q.verified ? (
         <p className="mt-4 rounded-xl border border-[#c9a227] bg-[#e0b422]/15 px-4 py-3 text-sm text-[#e0b422]">
@@ -36,7 +41,7 @@ export default async function LoginPage({ searchParams }: Props) {
       </div>
       <p className="mt-4 text-sm text-muted">
         No account?{" "}
-        <Link href="/register" className="text-[#e0b422] underline">
+        <Link href={joinHref} className="text-[#e0b422] underline">
           Join
         </Link>
       </p>

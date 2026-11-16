@@ -123,7 +123,7 @@ export function formatTelegramSignal(
     `Stop loss: ${levelText(sl, hidden)}`,
     "",
     escapeHtml(url),
-    `WhatsApp: <a href="https://chat.whatsapp.com/JKk0CCbrjayKEFbNAGoEor">chat.whatsapp.com/JKk0CCbrjayKEFbNAGoEor</a>`,
+    `WhatsApp: <a href="https://chat.whatsapp.com/Ldei6hKWmRyC85oaR6pKy2">chat.whatsapp.com/Ldei6hKWmRyC85oaR6pKy2</a>`,
     `Facebook: <a href="https://www.facebook.com/profile.php?id=61557381370313">facebook.com/profile.php?id=61557381370313</a>`,
   ].join("\n");
 }

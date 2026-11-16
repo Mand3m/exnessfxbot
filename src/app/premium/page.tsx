@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
+import { redirect } from "next/navigation";
 import { FeatureRow, OtherPackagePay, PremiumPicker } from "@/components/PremiumPicker";
+import { SHOW_PREMIUM } from "@/lib/site";
 
 export const metadata: Metadata = {
   title: "Premium",
@@ -8,6 +10,7 @@ export const metadata: Metadata = {
 };
 
 export default function PremiumPage() {
+  if (!SHOW_PREMIUM) redirect("/");
   return (
     <div>
       <div className="mx-auto max-w-5xl px-4 py-8 sm:px-6 sm:py-20">

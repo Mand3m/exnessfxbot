@@ -9,5 +9,7 @@ export async function GET() {
     ok: true,
     fib: book.latest,
     pairs: book.pairs,
+    order: book.latestOrder,
+    orders: book.orders,
   });
 }

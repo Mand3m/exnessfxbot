@@ -290,7 +290,7 @@ Period=M5
 """
     presets = folder / "MQL5" / "Presets"
     presets.mkdir(parents=True, exist_ok=True)
-    gold = "1" if str(account.get("id") or "") == "acc1" else "0"
+    gold = "1" if str(account.get("id") or "") == "acc1" and not gold_ea_off() else "0"
     (presets / "DeskBoot.set").write_text(
         f"AccountId={account.get('id') or ''}\nSuffix={suffix}\nMagic=260818\nEnableGoldEa={gold}\n",
         encoding="utf-8",
@@ -389,6 +389,7 @@ GOLD_EA_FLAG = (
     / "Files"
     / "exnessfxbot-gold-ea.on"
 )
+GOLD_EA_OFF = GOLD_EA_FLAG.with_name("exnessfxbot-gold-ea.off")
 
 
 def gold_symbol(account: dict) -> str:
@@ -406,9 +407,17 @@ def write_gold_preset(data_dir: Path) -> None:
         dest.write_text("InpMagic=260918\nInpRiskMoney=20000.0\nInpRewardR=3.0\n", encoding="utf-8")
 
 
+def gold_ea_off() -> bool:
+    return GOLD_EA_OFF.exists()
+
+
 def write_gold_flag(account: dict) -> None:
     try:
         GOLD_EA_FLAG.parent.mkdir(parents=True, exist_ok=True)
+        if gold_ea_off():
+            if GOLD_EA_FLAG.exists():
+                GOLD_EA_FLAG.unlink()
+            return
         GOLD_EA_FLAG.write_text(str(account.get("login") or ""), encoding="utf-8")
     except Exception:
         pass
@@ -533,7 +542,7 @@ def wait_login(exe: Path, account: dict, portable: bool, timeout: float = 120.0)
             log(f"{account['label']}: starting {exe}")
             args = [str(exe), "/portable"]
             start_ini = exe.parent / "config" / "start.ini"
-            if gold_ini and gold_ini.exists() and str(account.get("id") or "") == "acc1":
+            if gold_ini and gold_ini.exists() and str(account.get("id") or "") == "acc1" and not gold_ea_off():
                 start_ini = gold_ini
             if start_ini.exists():
                 args.append(f"/config:{start_ini}")
@@ -617,7 +626,7 @@ def provision_account(account: dict) -> dict:
                 dest = data / "MQL5" / "Experts" / "DeskBoot.ex5"
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(boot_src, dest)
-            if str(account.get("id") or "") == "acc1":
+            if str(account.get("id") or "") == "acc1" and not gold_ea_off():
                 install_gold_ea(data, account)
                 log(f"{label}: gold EA staged on {gold_symbol(account)} M5")
         log(f"{label}: reusing {exe}")

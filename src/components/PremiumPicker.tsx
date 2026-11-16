@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { BTC_ADDRESS, MERCHANTS, OTHER_PACKAGES, SIGNAL_PLANS } from "@/lib/packages";
+import { BTC_ADDRESS, MERCHANTS, OTHER_PACKAGES, SIGNAL_PLANS, isMaterialPack } from "@/lib/packages";
+import { formatUgx, usdToUgx } from "@/lib/ugx";
 import type { PayNetwork } from "@/lib/payments";
 import { DEFAULT_RISK_PCT, RISK_TIERS } from "@/lib/calc";
 
@@ -141,7 +142,9 @@ export function OtherPackagePay() {
       setPayPack(pack);
       return;
     }
-    window.location.replace(`/login?pack=${pack.id}`);
+    window.location.replace(
+      `/login?pack=${pack.id}&next=${encodeURIComponent(`/premium?pay=${pack.id}`)}`
+    );
   }, [user]);
 
   return (
@@ -170,7 +173,7 @@ export function OtherPackagePay() {
               <p className="mt-5 text-center text-xs text-[#d4b84a]">Checking account…</p>
             ) : (
               <Link
-                href={`/login?pack=${pack.id}`}
+                href={`/login?pack=${pack.id}&next=${encodeURIComponent(`/premium?pay=${pack.id}`)}`}
                 className="mt-5 inline-flex justify-center rounded-xl bg-[#e0b422] px-4 py-2.5 text-sm font-semibold !text-black"
               >
                 Log in to pay
@@ -186,7 +189,7 @@ export function OtherPackagePay() {
   );
 }
 
-function PayDialog({
+export function PayDialog({
   pack,
   defaultName,
   onClose,
@@ -206,6 +209,9 @@ function PayDialog({
   const [copied, setCopied] = useState(false);
   const crypto = network === "BTC";
   const code = !crypto ? MERCHANTS[network] : "";
+  const material = isMaterialPack(pack.id);
+  const ugx = usdToUgx(pack.price);
+  const ugxLabel = formatUgx(ugx);
 
   async function copyBtc() {
     try {
@@ -235,6 +241,27 @@ function PayDialog({
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || "Could not submit");
+      if (json.momo && json.payment?.id) {
+        setDone(json.message || "Approve the prompt on your phone.");
+        const paymentId = String(json.payment.id);
+        for (let attempt = 0; attempt < 40; attempt += 1) {
+          await new Promise((resolve) => window.setTimeout(resolve, 3000));
+          const statusRes = await fetch(`/api/payments/momo?id=${encodeURIComponent(paymentId)}`);
+          const statusJson = await statusRes.json();
+          if (!statusRes.ok) throw new Error(statusJson.error || "Could not check the MTN payment.");
+          if (statusJson.status === "approved") {
+            setDone(statusJson.message || "MTN confirmed the payment.");
+            setMt5Token(typeof statusJson.mt5Token === "string" ? statusJson.mt5Token : "");
+            return;
+          }
+          if (statusJson.status === "rejected") {
+            setDone("");
+            throw new Error(statusJson.message || "MTN did not complete the payment.");
+          }
+        }
+        setDone("The prompt is still waiting on your phone. Approve it, then submit this pack again if it does not open.");
+        return;
+      }
       setDone(json.message || "Submitted for approval.");
       setMt5Token(typeof json.mt5Token === "string" ? json.mt5Token : "");
     } catch (err) {
@@ -250,7 +277,9 @@ function PayDialog({
         <div className="flex items-start justify-between gap-4">
           <div>
             <h3 className="text-xl font-semibold text-[#e0b422]">Pay {pack.name}</h3>
-            <p className="num mt-1 text-sm text-[#d4b84a]">${pack.price}</p>
+            <p className="num mt-1 text-sm text-[#d4b84a]">
+              {network === "MTN" ? `${ugxLabel} UGX` : `$${pack.price}`}
+            </p>
           </div>
           <button
             type="button"
@@ -272,8 +301,16 @@ function PayDialog({
           <form className="mt-5 space-y-4" onSubmit={submit}>
             <p className="text-sm leading-relaxed text-[#d4b84a]">
               {crypto
-                ? "International clients: send Bitcoin to the address below, then paste the transaction ID and submit. Admin confirms it on the desk. After approval you get instant cards and an email on every new signal."
-                : "Enter the name and number you will pay from. Send the deposit to the merchant code for your network. Each merchant code is registered in the name of EXNESS FX TRADING CONSULTANTS LTD. Then submit. Admin confirms it on the desk. After approval you get instant cards and an email on every new signal."}
+                ? isMaterialPack(pack.id)
+                  ? "International clients: send Bitcoin to the address below, then paste the transaction ID and submit. Admin confirms it on the desk, then unlocks this pack on your registered email."
+                  : "International clients: send Bitcoin to the address below, then paste the transaction ID and submit. Admin confirms it on the desk. After approval you get instant cards and an email on every new signal."
+                : network === "MTN"
+                  ? material
+                    ? `The MTN amount is ${ugxLabel} UGX. Submit to request it on this number. Approve the PIN prompt if it arrives. This pack opens on your email when the payment is confirmed.`
+                    : `The MTN amount is ${ugxLabel} UGX. Submit to request it on this number. Approve the PIN prompt if it arrives. Premium starts when the payment is confirmed.`
+                  : isMaterialPack(pack.id)
+                    ? "Enter the name and number you will pay from. Send the deposit to the merchant code for your network. Each merchant code is registered in the name of EXNESS FX TRADING CONSULTANTS LTD. Then submit. Admin confirms it on the desk and unlocks this pack on your registered email."
+                    : "Enter the name and number you will pay from. Send the deposit to the merchant code for your network. Each merchant code is registered in the name of EXNESS FX TRADING CONSULTANTS LTD. Then submit. Admin confirms it on the desk. After approval you get instant cards and an email on every new signal."}
             </p>
             <div className="flex flex-wrap gap-2">
               {(["MTN", "Airtel", "BTC"] as const).map((net) => (
@@ -343,8 +380,22 @@ function PayDialog({
                   <li>Send BTC equal to ${pack.price} USD to that address.</li>
                   <li>Wait for the transaction to broadcast.</li>
                   <li>Paste the transaction ID below and submit.</li>
-                  <li>Admin confirms receipt, then premium starts.</li>
+                  <li>
+                    {material
+                      ? "Admin confirms receipt, then unlocks this pack on your email."
+                      : "Admin confirms receipt, then premium starts."}
+                  </li>
                 </ol>
+              </div>
+            ) : network === "MTN" ? (
+              <div className="rounded-xl border border-[#c9a227] bg-black/60 px-4 py-3 text-sm">
+                <p className="font-semibold text-[#e0b422]">
+                  MTN prompt: <span className="num">{ugxLabel} UGX</span>
+                </p>
+                <p className="mt-2 text-[#d4b84a]">
+                  If the prompt does not arrive, pay merchant code <span className="num">{code}</span> the same
+                  amount. The name on that code is EXNESS FX TRADING CONSULTANTS LTD.
+                </p>
               </div>
             ) : (
               <div className="rounded-xl border border-[#c9a227] bg-black/60 px-4 py-3 text-sm">
@@ -360,31 +411,37 @@ function PayDialog({
                     Pay / deposit to merchant code {code} (EXNESS FX TRADING CONSULTANTS LTD).
                   </li>
                   <li>
-                    Send ${pack.price} (or the UGX equivalent). Keep the confirmation.
+                    Send {ugxLabel} UGX. Keep the confirmation.
                   </li>
-                  <li>Submit this form. Admin approves, then premium starts.</li>
+                  <li>
+                    {material
+                      ? "Submit this form. Admin approves, then unlocks this pack on your email."
+                      : "Submit this form. Admin approves, then premium starts."}
+                  </li>
                 </ol>
               </div>
             )}
-            <label className="block text-sm">
-              <span className="mb-1 block text-[#d4b84a]">
-                {crypto ? "Bitcoin transaction ID" : "Confirmation / reference (optional)"}
-              </span>
-              <input
-                required={crypto}
-                value={reference}
-                onChange={(e) => setReference(e.target.value)}
-                placeholder={crypto ? "txid" : ""}
-                className="w-full rounded-xl border border-[#c9a227] bg-black px-3 py-3"
-              />
-            </label>
+            {network === "MTN" ? null : (
+              <label className="block text-sm">
+                <span className="mb-1 block text-[#d4b84a]">
+                  {crypto ? "Bitcoin transaction ID" : "Confirmation / reference (optional)"}
+                </span>
+                <input
+                  required={crypto}
+                  value={reference}
+                  onChange={(e) => setReference(e.target.value)}
+                  placeholder={crypto ? "txid" : ""}
+                  className="w-full rounded-xl border border-[#c9a227] bg-black px-3 py-3"
+                />
+              </label>
+            )}
             {error ? <p className="text-sm text-red-300">{error}</p> : null}
             <button
               type="submit"
               disabled={busy}
               className="w-full rounded-full bg-[#e0b422] px-5 py-3 text-sm font-semibold !text-black disabled:opacity-50"
             >
-              {busy ? "Submitting…" : "Submit to admin"}
+              {busy ? "Waiting…" : network === "MTN" ? `Request ${ugxLabel} UGX` : "Submit to admin"}
             </button>
           </form>
         )}

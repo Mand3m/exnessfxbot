@@ -1,8 +1,8 @@
 import { randomBytes } from "crypto";
 import fs from "fs";
 import path from "path";
-import { findUserById, grantPremium } from "./auth";
-import { findPack } from "./packages";
+import { findUserById, grantPack, grantPremium } from "./auth";
+import { findPack, isMaterialPack } from "./packages";
 
 export type PayNetwork = "MTN" | "Airtel" | "BTC";
 export type PaymentStatus = "pending" | "approved" | "rejected";
@@ -19,6 +19,10 @@ export type Payment = {
   phone: string;
   network: PayNetwork;
   reference?: string;
+  /** MoMo Collections reference. Set only after MTN accepts the prompt. */
+  momoRef?: string;
+  chargeAmount?: number;
+  chargeCurrency?: "UGX";
   status: PaymentStatus;
   createdAt: string;
   decidedAt?: string;
@@ -59,6 +63,48 @@ export function listPayments(): Payment[] {
 
 export function listUserPayments(userId: string): Payment[] {
   return listPayments().filter((p) => p.userId === userId);
+}
+
+export function findPayment(id: string): Payment | undefined {
+  return load().payments.find((p) => p.id === id);
+}
+
+export function findPaymentByMomoRef(momoRef: string): Payment | undefined {
+  return load().payments.find((p) => p.momoRef === momoRef);
+}
+
+/** A new MTN prompt replaces an earlier prompt that was never decided. */
+export function releasePendingMomo(userId: string, packId: string) {
+  const store = load();
+  let changed = false;
+  for (const row of store.payments) {
+    if (row.userId === userId && row.packId === packId && row.status === "pending" && row.momoRef) {
+      row.status = "rejected";
+      row.decidedAt = new Date().toISOString();
+      changed = true;
+    }
+  }
+  if (changed) save(store);
+}
+
+export function setCharge(id: string, chargeAmount: number) {
+  const store = load();
+  const row = store.payments.find((p) => p.id === id);
+  if (!row) return;
+  row.chargeAmount = chargeAmount;
+  row.chargeCurrency = "UGX";
+  save(store);
+}
+
+export function attachMomo(id: string, momoRef: string, chargeAmount: number) {
+  const store = load();
+  const row = store.payments.find((p) => p.id === id);
+  if (!row) return;
+  row.momoRef = momoRef;
+  row.chargeAmount = chargeAmount;
+  row.chargeCurrency = "UGX";
+  row.phone = row.phone;
+  save(store);
 }
 
 export function createPayment(input: {
@@ -123,7 +169,13 @@ export function decidePayment(id: string, status: "approved" | "rejected") {
   save(store);
   if (status === "approved") {
     const user = findUserById(row.userId);
-    if (user) grantPremium(user.id, row.days || 30);
+    if (user) {
+      if (isMaterialPack(row.packId)) {
+        grantPack(user.id, row.packId, row.days || 0);
+      } else {
+        grantPremium(user.id, row.days || 30);
+      }
+    }
   }
   return { ok: true as const, payment: row };
 }

@@ -10,6 +10,8 @@ export async function POST(req: Request) {
       name: String(body.name || ""),
       email: String(body.email || ""),
       password: String(body.password || ""),
+      dialIso: String(body.dialIso || ""),
+      phone: String(body.phone || ""),
     });
     if (!result.ok) {
       return NextResponse.json({ error: result.error }, { status: 400 });

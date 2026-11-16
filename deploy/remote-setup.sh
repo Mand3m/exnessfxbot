@@ -59,9 +59,13 @@ fi
 echo "Installing npm packages..."
 npm ci
 
-echo "Building Next.js (this can take several minutes on 1GB)..."
-export NODE_OPTIONS=--max-old-space-size=1536
-npm run build
+if [[ -f .next/BUILD_ID ]]; then
+  echo "Using prebuilt .next from upload (BUILD_ID=$(cat .next/BUILD_ID)) — skipping remote build."
+else
+  echo "Building Next.js (this can take several minutes on 1GB)..."
+  export NODE_OPTIONS=--max-old-space-size=1536
+  npm run build
+fi
 npm prune --omit=dev
 
 if [[ -f "$CADDY_SRC" ]]; then

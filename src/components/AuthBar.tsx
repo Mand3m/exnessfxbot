@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { LogoutButton } from "@/components/LogoutButton";
 
-type User = { name: string; email: string; plan: "regular" | "premium" };
+type User = { name: string; email: string; plan: "regular" | "premium"; role?: string };
 
 function AccountIcon() {
   return (
@@ -24,11 +24,24 @@ function AccountIcon() {
   );
 }
 
+function menuLink(href: string, label: string, onClick: () => void) {
+  return (
+    <Link
+      href={href}
+      onClick={onClick}
+      className="block px-4 py-2.5 text-sm font-semibold text-white hover:bg-white/10"
+    >
+      {label}
+    </Link>
+  );
+}
+
 export function AuthBar() {
   const pathname = usePathname();
   const [user, setUser] = useState<User | null | undefined>(undefined);
   const [open, setOpen] = useState(false);
   const wrap = useRef<HTMLDivElement>(null);
+  const isAdmin = user?.role === "admin";
 
   useEffect(() => {
     fetch("/api/auth/me", { credentials: "include" })
@@ -65,47 +78,19 @@ export function AuthBar() {
         <div className="absolute right-0 z-[70] mt-1 min-w-[10.5rem] overflow-hidden rounded-xl border border-[#c9a227] bg-black py-1 shadow-lg">
           {user ? (
             <>
-              <Link
-                href="/account"
-                onClick={() => setOpen(false)}
-                className="block px-4 py-2.5 text-sm font-semibold text-white hover:bg-white/10"
-              >
-                {user.name}
-              </Link>
-              <Link
-                href="/download"
-                onClick={() => setOpen(false)}
-                className="block whitespace-nowrap px-4 py-2.5 text-sm font-semibold text-white hover:bg-white/10"
-              >
-                Android app
-              </Link>
+              {menuLink(isAdmin ? "/admin" : "/account", user.name, () => setOpen(false))}
+              {isAdmin ? menuLink("/admin", "Admin", () => setOpen(false)) : null}
+              {menuLink("/download", "Android app", () => setOpen(false))}
               <div className="px-2 pb-1">
                 <LogoutButton compact />
               </div>
             </>
           ) : (
             <>
-              <Link
-                href="/login"
-                onClick={() => setOpen(false)}
-                className="block px-4 py-2.5 text-sm font-semibold text-white hover:bg-white/10"
-              >
-                Log in
-              </Link>
-              <Link
-                href="/register"
-                onClick={() => setOpen(false)}
-                className="block px-4 py-2.5 text-sm font-semibold text-white hover:bg-white/10"
-              >
-                Join
-              </Link>
-              <Link
-                href="/download"
-                onClick={() => setOpen(false)}
-                className="block whitespace-nowrap px-4 py-2.5 text-sm font-semibold text-white hover:bg-white/10"
-              >
-                Android app
-              </Link>
+              {menuLink("/login", "Log in", () => setOpen(false))}
+              {menuLink("/register", "Join", () => setOpen(false))}
+              {menuLink("/admin", "Admin", () => setOpen(false))}
+              {menuLink("/download", "Android app", () => setOpen(false))}
             </>
           )}
         </div>

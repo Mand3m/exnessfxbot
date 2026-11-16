@@ -11,6 +11,8 @@ from __future__ import annotations
 import atexit
 import json
 import os
+import secrets
+import subprocess
 import sys
 import time
 import traceback
@@ -89,10 +91,20 @@ def now_iso() -> str:
 
 
 def log(msg: str) -> None:
-    line = f"{datetime.now().strftime('%H:%M:%S')} {msg}"
-    print(line, flush=True)
-    # When the desk spawns us, stdout is already the log file.
-    if not sys.stdout.isatty():
+    text = str(msg).replace("\u2192", "->")
+    line = f"{datetime.now().strftime('%H:%M:%S')} {text}"
+    printed = False
+    try:
+        print(line, flush=True)
+        printed = True
+    except Exception:
+        try:
+            enc = getattr(sys.stdout, "encoding", None) or "ascii"
+            print(line.encode(enc, "replace").decode(enc, "replace"), flush=True)
+            printed = True
+        except Exception:
+            pass
+    if printed and not sys.stdout.isatty():
         return
     try:
         LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -245,8 +257,78 @@ def save_queue(queue: dict) -> None:
     try:
         COMMON_QUEUE.parent.mkdir(parents=True, exist_ok=True)
         write_json(COMMON_QUEUE, queue)
+        write_job_feeds(queue)
     except Exception:
         pass
+
+
+def jobs_tsv_path(account_id: str) -> Path:
+    return COMMON_QUEUE.parent / f"exnessfxbot-jobs-{account_id}.tsv"
+
+
+def results_tsv_path(account_id: str) -> Path:
+    return COMMON_QUEUE.parent / f"exnessfxbot-results-{account_id}.tsv"
+
+
+def write_job_feeds(queue: dict) -> None:
+    accounts = load_accounts()
+    COMMON_QUEUE.parent.mkdir(parents=True, exist_ok=True)
+    for acc in accounts:
+        lines = []
+        for job in queue.get("jobs") or []:
+            if str(job.get("accountId") or "") != acc["id"]:
+                continue
+            lines.append(
+                "\t".join(
+                    [
+                        str(job.get("id") or ""),
+                        str(job.get("action") or "open"),
+                        str(job.get("pair") or ""),
+                        str(job.get("side") or ""),
+                        str(job.get("entry") or 0),
+                        str(job.get("takeProfit") or 0),
+                        str(job.get("stopLoss") or 0),
+                        str(job.get("lot") or 0),
+                        str(job.get("riskPct") or acc.get("riskPct") or 1),
+                        str(job.get("signalId") or ""),
+                        str(job.get("status") or "queued"),
+                    ]
+                )
+            )
+        jobs_tsv_path(acc["id"]).write_text(("\n".join(lines) + "\n") if lines else "", encoding="utf-8")
+
+
+def harvest_ea_results(queue: dict) -> bool:
+    dirty = False
+    by_id = {str(j.get("id") or ""): j for j in queue.get("jobs") or []}
+    folder = COMMON_QUEUE.parent
+    if not folder.exists():
+        return False
+    for path in folder.glob("exnessfxbot-results-*.tsv"):
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+        for line in text.splitlines():
+            parts = line.split("\t")
+            if len(parts) < 4:
+                continue
+            job = by_id.get(parts[0])
+            if not job or job.get("status") != "queued":
+                continue
+            job["status"] = parts[1] or "sent"
+            if parts[2].isdigit() and int(parts[2]) > 0:
+                job["ticket"] = int(parts[2])
+            job["message"] = parts[3]
+            job["doneAt"] = now_iso()
+            stamp_signal_mt5(str(job.get("signalId") or ""), job["status"], job["message"], job.get("ticket"))
+            dirty = True
+    return dirty
+
+
+def uses_local_agent(cfg: dict) -> bool:
+    path = str(cfg.get("terminalPath") or "").replace("\\", "/").lower()
+    return "/mt5-terminals/" in path
 
 
 def current_login() -> int | None:
@@ -281,9 +363,12 @@ def connect(cfg: dict, force: bool = False) -> dict:
             )
             return status
     mt5.shutdown()
-    kwargs = {}
+    kwargs = {"timeout": 60000}
     if cfg["terminalPath"]:
         kwargs["path"] = cfg["terminalPath"]
+        path_norm = cfg["terminalPath"].replace("\\", "/").lower()
+        if "/mt5-terminals/" in path_norm:
+            kwargs["portable"] = True
     if not mt5.initialize(**kwargs):
         status["message"] = f"initialize failed: {mt5.last_error()}"
         return status
@@ -295,6 +380,9 @@ def connect(cfg: dict, force: bool = False) -> dict:
     account = mt5.account_info()
     if account is None:
         status["message"] = f"no account info: {mt5.last_error()}"
+        return status
+    if wanted and int(account.login) != wanted:
+        status["message"] = f"MT5 is on {account.login}, not {wanted}"
         return status
     status.update(
         {
@@ -313,6 +401,23 @@ def connect(cfg: dict, force: bool = False) -> dict:
 
 
 GOLD_MIN_USD = 500.0
+EA_MAGIC = 260918
+COPY_MAP_PATH = DATA / "mt5-ea-copy.json"
+EA_SIGNAL_MAP_PATH = DATA / "mt5-ea-signals.json"
+TELEGRAM_QUEUE_PATH = DATA / "telegram-queue.json"
+TELEGRAM_PID_PATH = DATA / "telegram-poster.pid"
+REGULAR_DELAY_SEC = 10 * 60
+GOLD_EA_FLAG = (
+    Path.home()
+    / "AppData"
+    / "Roaming"
+    / "MetaQuotes"
+    / "Terminal"
+    / "Common"
+    / "Files"
+    / "exnessfxbot-gold-ea.on"
+)
+GOLD_EA_OFF = GOLD_EA_FLAG.with_name("exnessfxbot-gold-ea.off")
 PAIR_META = {
     "USDJPY": {"pip_size": 0.01, "pip_value": 6.8},
     "XAUUSD": {"pip_size": 0.1, "pip_value": 10.0},
@@ -540,6 +645,28 @@ def nudge_stops(info, tick, side: str, order_type: int, price: float, sl: float,
     return round(sl, digits), round(tp, digits)
 
 
+
+def ensure_trade_allowed(retries: int = 2) -> tuple[bool, str]:
+    """Algo Trading must be on or order_send returns 10027."""
+    try:
+        from mt5_terminals import try_enable_autotrading
+    except Exception:
+        try_enable_autotrading = None  # type: ignore
+    for attempt in range(retries + 1):
+        term = mt5.terminal_info()
+        if term is not None and getattr(term, "trade_allowed", False):
+            return True, ""
+        if try_enable_autotrading is not None and attempt < retries:
+            try:
+                try_enable_autotrading()
+            except Exception:
+                pass
+            time.sleep(1.0)
+            continue
+        break
+    return False, "10027 AutoTrading disabled by client — turn on Algo Trading (AutoTrading) in MT5, then submit again"
+
+
 def send_request(request: dict, modes: list[int]):
     last = None
     for mode in modes:
@@ -616,14 +743,21 @@ def open_trade(job: dict, cfg: dict) -> tuple[str, int | None, str]:
     sl = round(float(job["stopLoss"]), digits)
     tp = round(float(job["takeProfit"]), digits)
     side = str(job.get("side") or "")
+    is_ea_copy = str(job.get("signalId") or "").startswith("h1r5:") or job.get("source") == "gold-ea"
     bad = levels_wrong_side(side, entry, sl, tp)
     if bad:
         return "error", None, f"10016 Invalid stops — {bad} (entry {entry}, sl {sl}, tp {tp})"
-    order_type, price = order_type_for(side, entry, tick.bid, tick.ask, point)
+    if is_ea_copy or str(job.get("mode") or "") == "market":
+        if side == "buy":
+            order_type, price = mt5.ORDER_TYPE_BUY, float(tick.ask)
+        else:
+            order_type, price = mt5.ORDER_TYPE_SELL, float(tick.bid)
+    else:
+        order_type, price = order_type_for(side, entry, tick.bid, tick.ask, point)
     price = round(price, digits)
     order_kind = order_kind_from_type(order_type)
 
-    if pair == "XAUUSD" and equity_usd < GOLD_MIN_USD:
+    if pair == "XAUUSD" and equity_usd < GOLD_MIN_USD and not is_ea_copy:
         attach_desk_trail(job, cfg, symbol, entry, sl, tp, order_kind, virtual=True)
         return (
             "skipped",
@@ -631,7 +765,8 @@ def open_trade(job: dict, cfg: dict) -> tuple[str, int | None, str]:
             f"{sized} is under ${GOLD_MIN_USD:.0f} — gold not opened on MT5. Card stays live and is tracked without a ticket.",
         )
     if lot is None:
-        attach_desk_trail(job, cfg, symbol, entry, sl, tp, order_kind, virtual=True)
+        if not is_ea_copy:
+            attach_desk_trail(job, cfg, symbol, entry, sl, tp, order_kind, virtual=True)
         return (
             "skipped",
             None,
@@ -648,11 +783,15 @@ def open_trade(job: dict, cfg: dict) -> tuple[str, int | None, str]:
         "price": price,
         "sl": sl,
         "tp": tp,
-        "deviation": cfg["deviation"],
-        "magic": cfg["magic"],
-        "comment": comment_for(job["signalId"]),
+        "deviation": max(int(cfg["deviation"] or 20), 30) if is_ea_copy else cfg["deviation"],
+        "magic": EA_MAGIC if is_ea_copy else cfg["magic"],
+        "comment": (str(job.get("signalId") or "")[:31] if is_ea_copy else comment_for(job["signalId"])),
         "type_time": mt5.ORDER_TIME_GTC,
     }
+    allowed, allow_msg = ensure_trade_allowed()
+    if not allowed:
+        return "queued", None, allow_msg
+
     result = send_request(request, filling_modes(info))
     if result is not None and result.retcode == 10016:
         sl2, tp2 = nudge_stops(info, tick, side, order_type, price, sl, tp)
@@ -661,12 +800,23 @@ def open_trade(job: dict, cfg: dict) -> tuple[str, int | None, str]:
             request["tp"] = tp2
             sl, tp = sl2, tp2
             result = send_request(request, filling_modes(info))
+    if result is not None and int(getattr(result, "retcode", 0) or 0) == 10027:
+        allowed, allow_msg = ensure_trade_allowed(retries=3)
+        if allowed:
+            result = send_request(request, filling_modes(info))
+        else:
+            return "queued", None, allow_msg
     if result is None:
         return "error", None, f"order_send failed: {mt5.last_error()}"
+    if result.retcode == 10027:
+        return "queued", None, (
+            f"{result.retcode} {result.comment} — turn on Algo Trading (AutoTrading) in MT5"
+        )
     if result.retcode != mt5.TRADE_RETCODE_DONE:
         return "error", None, f"{result.retcode} {result.comment}"
     ticket = int(result.order or result.deal or 0)
-    attach_desk_trail(job, cfg, symbol, entry, sl, tp, order_kind, ticket=ticket, virtual=False)
+    if not is_ea_copy:
+        attach_desk_trail(job, cfg, symbol, entry, sl, tp, order_kind, ticket=ticket, virtual=False)
     return (
         "sent",
         ticket,
@@ -947,6 +1097,7 @@ def manage_virtual_trails() -> None:
         if not trail.get("virtual"):
             kept.append(trail)
             continue
+        # Virtual rows are desk-only; still skip if tagged to another login.
         symbol = str(trail.get("symbol") or "")
         tick = mt5.symbol_info_tick(symbol) if symbol else None
         if tick is None:
@@ -1020,6 +1171,11 @@ def manage_pending_invalidation() -> None:
             kept.append(trail)
             continue
         if not trail.get("pending"):
+            kept.append(trail)
+            continue
+        info = mt5.account_info()
+        tlogin = str(trail.get("login") or "").strip()
+        if tlogin and info is not None and str(info.login) != tlogin:
             kept.append(trail)
             continue
         orders, positions = matching_entities(trail["signalId"], trail)
@@ -1152,7 +1308,7 @@ def commission_be_sl(pos, signal_entry: float, trail: dict) -> tuple[float, str]
     sl = round(sl, digits)
     if offset <= 0:
         return sl, "entry (no commission yet)"
-    return sl, f"entry {entry:g} + commission cover {cover:g} → {sl:g}"
+    return sl, f"entry {entry:g} + commission cover {cover:g} -> {sl:g}"
 
 
 def attach_open_commission(signal_id: str, ticket: int = 0) -> None:
@@ -1351,19 +1507,23 @@ def history_exit(
 
 
 def reconcile_closed_signals() -> None:
-    """If MT5 already closed a desk ticket, mark the card filled. Do not wait for Yahoo."""
+    """If MT5 already closed a desk ticket, mark the card filled/cancelled. Do not wait for Yahoo."""
     data = read_json(SIGNALS_PATH, None)
     if not isinstance(data, dict) or not isinstance(data.get("signals"), list):
         return
+    trails = {str(t.get("signalId") or ""): t for t in (load_trails().get("trails") or [])}
     for row in data["signals"]:
         if row.get("status") != "active":
             continue
         mt5row = row.get("mt5") if isinstance(row.get("mt5"), dict) else {}
-        if mt5row.get("status") != "sent":
-            continue
         sid = str(row.get("id") or "")
-        ticket = int(mt5row.get("ticket") or 0)
-        orders, positions = matching_entities(sid, {"ticket": ticket, "signalId": sid})
+        trail = trails.get(sid) or {}
+        if trail.get("virtual"):
+            continue
+        ticket = int(mt5row.get("ticket") or trail.get("ticket") or 0)
+        if mt5row.get("status") != "sent" and not ticket:
+            continue
+        orders, positions = matching_entities(sid, {"ticket": ticket, "signalId": sid, "symbol": trail.get("symbol")})
         if orders or positions:
             continue
         kind, price = history_exit(
@@ -1371,10 +1531,20 @@ def reconcile_closed_signals() -> None:
             ticket,
             float(row.get("stopLoss") or 0),
             float(row.get("takeProfit") or 0),
-            str(row.get("publishedAt") or ""),
+            str(row.get("enteredAt") or row.get("publishedAt") or ""),
         )
+        pending = bool(trail.get("pending")) and not row.get("enteredAt") and not trail.get("filledAt")
+        if pending and (not kind or kind == "manual"):
+            notify_desk_cancel(sid, "Cancelled on MT5.")
+            continue
         if kind and price:
             notify_desk_fill(sid, price, kind)
+            continue
+        symbol = str(trail.get("symbol") or "")
+        tick = mt5.symbol_info_tick(symbol) if symbol else None
+        px = float((tick.bid or tick.ask) if tick else 0) or float(row.get("entry") or 0)
+        if px:
+            notify_desk_fill(sid, px, "manual")
 
 
 def notify_desk_sl(signal_id: str, new_sl: float, reason: str) -> None:
@@ -1416,7 +1586,7 @@ def notify_desk_sl(signal_id: str, new_sl: float, reason: str) -> None:
         break
     if found:
         write_json(SIGNALS_PATH, data)
-        print(f"Premium notice: {signal_id} SL → {new_sl} ({reason})")
+        print(f"Premium notice: {signal_id} SL -> {new_sl} ({reason})")
 
 
 def drop_trails_for_signal(signal_id: str) -> None:
@@ -1568,8 +1738,122 @@ def watch_sleep() -> float:
     return 1.5
 
 
-def manage_trails() -> None:
-    """After fill: 1R → SL to entry. 2R → close half and SL to 1R. Rest runs to TP.
+def signal_id_from_comment(comment: str) -> str:
+    text = str(comment or "")
+    if text.startswith("fx:"):
+        return text[3:].split()[0][:16]
+    return ""
+
+
+def trail_belongs_here(trail: dict, cfg: dict | None) -> bool:
+    if not cfg:
+        return True
+    tid = str(trail.get("accountId") or "")
+    if tid and tid != str(cfg.get("id") or ""):
+        return False
+    tlogin = str(trail.get("login") or "").strip()
+    info = mt5.account_info()
+    if tlogin and info is not None and str(info.login) != tlogin:
+        return False
+    return True
+
+
+def recover_trails_from_book(cfg: dict) -> None:
+    """Rebuild missing 1R/2R watchers from live orders/positions on this account."""
+    store = load_trails()
+    have = {
+        (str(t.get("signalId") or ""), str(t.get("accountId") or cfg["id"]))
+        for t in store["trails"]
+    }
+    raw = read_json(SIGNALS_PATH, {})
+    signals = {}
+    if isinstance(raw, dict):
+        for row in raw.get("signals") or []:
+            if row.get("id"):
+                signals[str(row["id"])] = row
+    magic = int(cfg.get("magic") or 0)
+    added = 0
+
+    def add(sid: str, ticket: int, symbol: str, side: str, entry: float, sl: float, tp: float, pending: bool):
+        nonlocal added
+        if not sid:
+            for row in signals.values():
+                mt5row = row.get("mt5") if isinstance(row.get("mt5"), dict) else {}
+                if ticket and int(mt5row.get("ticket") or 0) == int(ticket):
+                    sid = str(row["id"])
+                    break
+        if not sid and ticket:
+            sid = f"live-{int(ticket)}"
+        sig = signals.get(sid) if sid else None
+        if sig:
+            if str(sig.get("status") or "") not in {"active", "pending"}:
+                return
+            side = str(sig.get("side") or side)
+            entry = float(sig.get("entry") or entry or 0)
+            sl = float(sig.get("stopLoss") or sl or 0)
+            tp = float(sig.get("takeProfit") or tp or 0)
+        if not sid or entry <= 0 or sl <= 0:
+            return
+        key = (sid, str(cfg["id"]))
+        if key in have:
+            return
+        register_trail(
+            {
+                "accountId": cfg["id"],
+                "login": cfg.get("login"),
+                "signalId": sid,
+                "ticket": int(ticket or 0),
+                "symbol": symbol,
+                "side": side,
+                "entry": entry,
+                "signalEntry": entry,
+                "originalSL": sl,
+                "originalTP": tp,
+                "orderKind": "limit" if pending else "market",
+                "pending": pending,
+                "virtual": False,
+            }
+        )
+        have.add(key)
+        added += 1
+
+    for pos in mt5.positions_get() or []:
+        comment = str(pos.comment or "")
+        if int(pos.magic or 0) != magic and not comment.startswith("fx:"):
+            continue
+        side = "buy" if pos.type == mt5.POSITION_TYPE_BUY else "sell"
+        add(
+            signal_id_from_comment(comment),
+            int(pos.ticket),
+            str(pos.symbol),
+            side,
+            float(pos.price_open or 0),
+            float(pos.sl or 0),
+            float(pos.tp or 0),
+            False,
+        )
+    for order in mt5.orders_get() or []:
+        comment = str(order.comment or "")
+        if int(order.magic or 0) != magic and not comment.startswith("fx:"):
+            continue
+        otype = int(order.type)
+        side = "buy" if otype in (mt5.ORDER_TYPE_BUY, mt5.ORDER_TYPE_BUY_LIMIT, mt5.ORDER_TYPE_BUY_STOP) else "sell"
+        add(
+            signal_id_from_comment(comment),
+            int(order.ticket),
+            str(order.symbol),
+            side,
+            float(order.price_open or 0),
+            float(order.sl or 0),
+            float(order.tp or 0),
+            True,
+        )
+    if added:
+        log(f"Recovered {added} 1R/2R trail(s) from the live book")
+
+
+def manage_trails(cfg: dict | None = None) -> None:
+    """After fill: 1R -> SL to entry. 2R -> close half and SL to 1R. Rest runs to TP.
     Close only if price later comes back to the new SL (broker SL), not from old bars."""
     store = load_trails()
     if not store["trails"]:
@@ -1580,153 +1864,178 @@ def manage_trails() -> None:
         if trail.get("virtual"):
             kept.append(trail)
             continue
-        orders, positions = matching_entities(trail["signalId"], trail)
-        pos = positions[0] if positions else None
-        if pos is None:
-            if orders:
-                kept.append(trail)
-                continue
-            stage_now = int(trail.get("stage") or 0)
-            se = float(trail.get("signalEntry") or trail.get("entry") or 0)
-            risk = float(trail.get("risk") or 0)
-            buy = str(trail.get("side") or "") == "buy"
-            cur_sl = float(trail.get("originalSL") or 0)
-            if stage_now >= 1 and se:
-                cur_sl = float(trail.get("beSl") or se)
-            if stage_now >= 2 and se and risk:
-                cur_sl = se + risk if buy else se - risk
-            kind, price = history_exit(
-                str(trail.get("signalId") or ""),
-                int(trail.get("ticket") or 0),
-                cur_sl,
-                float(trail.get("originalTP") or 0),
-                str(trail.get("filledAt") or trail.get("createdAt") or ""),
-            )
-            if kind and price:
-                notify_desk_fill(str(trail.get("signalId") or ""), price, kind)
-                dirty = True
-                continue
+        if not trail_belongs_here(trail, cfg):
             kept.append(trail)
             continue
-        if trail.get("pending") or trail.get("ticket") != pos.ticket:
-            dirty = True
-        was_pending = bool(trail.get("pending"))
-        if was_pending or not trail.get("filledAt"):
-            if not trail.get("filledAt"):
-                trail["filledAt"] = now_iso()
-            notify_desk_entered(str(trail.get("signalId") or ""), int(pos.ticket))
-        trail["pending"] = False
-        trail["ticket"] = int(pos.ticket)
-        attach_open_commission(str(trail.get("signalId") or ""), int(pos.ticket))
-        signal_entry = float(trail.get("signalEntry") or trail.get("entry") or 0)
-        fill = float(pos.price_open or signal_entry)
-        risk = float(trail.get("risk") or 0)
-        if risk <= 0:
-            risk = abs(signal_entry - float(trail["originalSL"]))
-            trail["risk"] = risk
-        if risk <= 0:
+        try:
+            changed = _manage_one_trail(trail, kept)
+            if changed:
+                dirty = True
+        except Exception as exc:
+            log(f"Trail {trail.get('signalId')}: {exc}")
             kept.append(trail)
-            continue
-        tick = mt5.symbol_info_tick(pos.symbol)
-        if tick is None:
-            kept.append(trail)
-            continue
-        buy = pos.type == mt5.POSITION_TYPE_BUY
-        info = mt5.symbol_info(pos.symbol)
-        point = float(info.point) if info else 0.001
-        stops = int(getattr(info, "trade_stops_level", 0) or 0) * point if info else 0.0
-        # 1R from the card entry (what the desk published) and from the fill.
-        r1_card = signal_entry + risk if buy else signal_entry - risk
-        r1_fill = fill + risk if buy else fill - risk
-        r1 = r1_card
-        r2 = signal_entry + 2 * risk if buy else signal_entry - 2 * risk
-        hit_1r_now = tick_prints(tick, r1_card, buy) or tick_prints(tick, r1_fill, buy)
-        hit_2r_now = tick_prints(tick, r2, buy)
-        stage = int(trail.get("stage") or 0)
-        be, be_note = commission_be_sl(pos, signal_entry if signal_entry > 0 else fill, trail)
-
-        def sl_still_safe(new_sl: float, live) -> bool:
-            pad = max(point * 10, stops, 0.0)
-            if buy:
-                return float(live.bid) > float(new_sl) + pad
-            return float(live.ask) < float(new_sl) - pad
-
-        # First live print of 2R — no hold. Same loop: half off, SL to 1R.
-        if stage < 2 and hit_2r_now:
-            lock = r1
-            if sl_still_safe(lock, tick):
-                notes = []
-                if not trail.get("halfTaken"):
-                    closed, half_detail = close_half_position(pos)
-                    if closed:
-                        trail["halfTaken"] = True
-                        notes.append(half_detail)
-                        dirty = True
-                        nxt = refresh_position(str(trail.get("signalId") or ""), trail, int(pos.ticket))
-                        if nxt is None:
-                            trail["stage"] = 2
-                            trail["lastError"] = ""
-                            log(
-                                f"Trail 1:2 → half close finished the book on {pos.symbol} #{pos.ticket} ({half_detail})"
-                            )
-                            notify_desk_sl(trail["signalId"], lock, "lock1r")
-                            kept.append(trail)
-                            continue
-                        pos = nxt
-                    elif "too small to split" in half_detail:
-                        trail["halfTaken"] = True
-                        notes.append(half_detail)
-                        dirty = True
-                    else:
-                        trail["lastError"] = half_detail
-                        dirty = True
-                        log(f"Trail 1:2 half-close failed on {pos.symbol} #{pos.ticket}: {half_detail}")
-                ok, detail = set_position_sl(pos, lock)
-                extra = f", {'; '.join(notes)}" if notes else ""
-                if ok:
-                    trail["stage"] = 2
-                    stage = 2
-                    trail["lastError"] = ""
-                    dirty = True
-                    log(
-                        f"Trail 1:2 → half off then SL to 1:1 {lock} on {pos.symbol} #{pos.ticket} ({detail}{extra})"
-                    )
-                    notify_desk_sl(trail["signalId"], lock, "lock1r")
-                else:
-                    trail["lastError"] = detail
-                    dirty = True
-                    log(f"Trail 1:2 SL lock failed on {pos.symbol} #{pos.ticket}: {detail}{extra}")
-            elif not trail.get("unsafe2rLogged"):
-                trail["unsafe2rLogged"] = True
-                dirty = True
-                log(
-                    f"Trail 1:2 skipped — 2R printed but new SL {lock} is through live price on {pos.symbol} #{pos.ticket}"
-                )
-
-        if stage < 1 and hit_1r_now:
-            if not sl_still_safe(be, tick):
-                kept.append(trail)
-                continue
-            ok, detail = set_position_sl(pos, be)
-            if ok:
-                trail["stage"] = 1
-                trail["beSl"] = be
-                stage = 1
-                trail["lastError"] = ""
-                dirty = True
-                log(
-                    f"Trail 1:1 → SL to break-even {be} on {pos.symbol} #{pos.ticket} ({detail}; {be_note})"
-                )
-                notify_desk_sl(trail["signalId"], be, "be")
-            else:
-                trail["lastError"] = detail
-                dirty = True
-                log(f"Trail 1:1 failed on {pos.symbol} #{pos.ticket}: {detail}")
-
-        kept.append(trail)
     if dirty or len(kept) != len(store["trails"]):
         store["trails"] = kept
         save_trails(store)
+
+
+def _manage_one_trail(trail: dict, kept: list) -> bool:
+    dirty = False
+    orders, positions = matching_entities(trail["signalId"], trail)
+    pos = positions[0] if positions else None
+    if pos is None:
+        if orders:
+            kept.append(trail)
+            return False
+        stage_now = int(trail.get("stage") or 0)
+        se = float(trail.get("signalEntry") or trail.get("entry") or 0)
+        risk = float(trail.get("risk") or 0)
+        buy = str(trail.get("side") or "") == "buy"
+        cur_sl = float(trail.get("originalSL") or 0)
+        if stage_now >= 1 and se:
+            cur_sl = float(trail.get("beSl") or se)
+        if stage_now >= 2 and se and risk:
+            cur_sl = se + risk if buy else se - risk
+        kind, price = history_exit(
+            str(trail.get("signalId") or ""),
+            int(trail.get("ticket") or 0),
+            cur_sl,
+            float(trail.get("originalTP") or 0),
+            str(trail.get("filledAt") or trail.get("createdAt") or ""),
+        )
+        sid = str(trail.get("signalId") or "")
+        if kind and price:
+            if trail.get("pending") and not trail.get("filledAt") and kind == "manual":
+                notify_desk_cancel(sid, "Cancelled on MT5.")
+            else:
+                notify_desk_fill(sid, price, kind)
+            return True
+        if trail.get("pending") and not trail.get("filledAt"):
+            notify_desk_cancel(sid, "Cancelled on MT5.")
+            return True
+        symbol = str(trail.get("symbol") or "")
+        tick = mt5.symbol_info_tick(symbol) if symbol else None
+        px = float((tick.bid or tick.ask) if tick else 0) or float(trail.get("entry") or 0)
+        if px:
+            notify_desk_fill(sid, px, "manual")
+            return True
+        kept.append(trail)
+        return False
+
+    if trail.get("pending") or trail.get("ticket") != pos.ticket:
+        dirty = True
+    was_pending = bool(trail.get("pending"))
+    if was_pending or not trail.get("filledAt"):
+        if not trail.get("filledAt"):
+            trail["filledAt"] = now_iso()
+        notify_desk_entered(str(trail.get("signalId") or ""), int(pos.ticket))
+    trail["pending"] = False
+    trail["ticket"] = int(pos.ticket)
+    attach_open_commission(str(trail.get("signalId") or ""), int(pos.ticket))
+    signal_entry = float(trail.get("signalEntry") or trail.get("entry") or 0)
+    fill = float(pos.price_open or signal_entry)
+    risk = float(trail.get("risk") or 0)
+    if risk <= 0:
+        risk = abs(signal_entry - float(trail["originalSL"]))
+        trail["risk"] = risk
+    if risk <= 0:
+        kept.append(trail)
+        return dirty
+    tick = mt5.symbol_info_tick(pos.symbol)
+    if tick is None:
+        kept.append(trail)
+        return dirty
+    buy = pos.type == mt5.POSITION_TYPE_BUY
+    info = mt5.symbol_info(pos.symbol)
+    point = float(info.point) if info else 0.001
+    stops = int(getattr(info, "trade_stops_level", 0) or 0) * point if info else 0.0
+    r1_card = signal_entry + risk if buy else signal_entry - risk
+    r1_fill = fill + risk if buy else fill - risk
+    r1 = r1_card
+    r2 = signal_entry + 2 * risk if buy else signal_entry - 2 * risk
+    hit_1r_now = tick_prints(tick, r1_card, buy) or tick_prints(tick, r1_fill, buy)
+    hit_2r_now = tick_prints(tick, r2, buy)
+    stage = int(trail.get("stage") or 0)
+    be, be_note = commission_be_sl(pos, signal_entry if signal_entry > 0 else fill, trail)
+
+    def sl_still_safe(new_sl: float, live) -> bool:
+        pad = max(point * 10, stops, 0.0)
+        if buy:
+            return float(live.bid) > float(new_sl) + pad
+        return float(live.ask) < float(new_sl) - pad
+
+    if stage < 2 and hit_2r_now:
+        lock = r1
+        if sl_still_safe(lock, tick):
+            notes = []
+            if not trail.get("halfTaken"):
+                closed, half_detail = close_half_position(pos)
+                if closed:
+                    trail["halfTaken"] = True
+                    notes.append(half_detail)
+                    dirty = True
+                    nxt = refresh_position(str(trail.get("signalId") or ""), trail, int(pos.ticket))
+                    if nxt is None:
+                        trail["stage"] = 2
+                        trail["lastError"] = ""
+                        log(
+                            f"Trail 1:2 -> half close finished the book on {pos.symbol} #{pos.ticket} ({half_detail})"
+                        )
+                        notify_desk_sl(trail["signalId"], lock, "lock1r")
+                        kept.append(trail)
+                        return True
+                    pos = nxt
+                elif "too small to split" in half_detail:
+                    trail["halfTaken"] = True
+                    notes.append(half_detail)
+                    dirty = True
+                else:
+                    trail["lastError"] = half_detail
+                    dirty = True
+                    log(f"Trail 1:2 half-close failed on {pos.symbol} #{pos.ticket}: {half_detail}")
+            ok, detail = set_position_sl(pos, lock)
+            extra = f", {'; '.join(notes)}" if notes else ""
+            if ok:
+                trail["stage"] = 2
+                stage = 2
+                trail["lastError"] = ""
+                dirty = True
+                log(
+                    f"Trail 1:2 -> half off then SL to 1:1 {lock} on {pos.symbol} #{pos.ticket} ({detail}{extra})"
+                )
+                notify_desk_sl(trail["signalId"], lock, "lock1r")
+            else:
+                trail["lastError"] = detail
+                dirty = True
+                log(f"Trail 1:2 SL lock failed on {pos.symbol} #{pos.ticket}: {detail}{extra}")
+        elif not trail.get("unsafe2rLogged"):
+            trail["unsafe2rLogged"] = True
+            dirty = True
+            log(
+                f"Trail 1:2 skipped - 2R printed but new SL {lock} is through live price on {pos.symbol} #{pos.ticket}"
+            )
+
+    if stage < 1 and hit_1r_now:
+        if not sl_still_safe(be, tick):
+            kept.append(trail)
+            return dirty
+        ok, detail = set_position_sl(pos, be)
+        if ok:
+            trail["stage"] = 1
+            trail["beSl"] = be
+            trail["lastError"] = ""
+            dirty = True
+            log(
+                f"Trail 1:1 -> SL to break-even {be} on {pos.symbol} #{pos.ticket} ({detail}; {be_note})"
+            )
+            notify_desk_sl(trail["signalId"], be, "be")
+        else:
+            trail["lastError"] = detail
+            dirty = True
+            log(f"Trail 1:1 failed on {pos.symbol} #{pos.ticket}: {detail}")
+
+    kept.append(trail)
+    return dirty
 
 
 def matching_entities(signal_id: str, trail: dict | None = None):
@@ -1894,6 +2203,14 @@ def process_job(job: dict, cfg: dict) -> dict:
         traceback.print_exc()
     job["status"] = status
     job["message"] = message
+    if status == "queued":
+        # Keep waiting (usually AutoTrading off) so the next loop can retry.
+        job.pop("doneAt", None)
+        if ticket:
+            job["ticket"] = ticket
+        stamp_signal_mt5(str(job.get("signalId") or ""), "queued", message, ticket)
+        log(f"[waiting] {job['action']} {job.get('pair', '')} {job.get('side', '')} {message}")
+        return job
     job["doneAt"] = now_iso()
     if ticket:
         job["ticket"] = ticket
@@ -1906,11 +2223,11 @@ def our_book_open(cfg: dict) -> bool:
     magic = int(cfg.get("magic") or 0)
     for order in mt5.orders_get() or []:
         comment = str(order.comment or "")
-        if order.magic == magic or comment.startswith("fx:"):
+        if order.magic == magic or order.magic == EA_MAGIC or comment.startswith("fx:") or comment.startswith("h1r5:") or comment.startswith("H1RngM5"):
             return True
     for pos in mt5.positions_get() or []:
         comment = str(pos.comment or "")
-        if pos.magic == magic or comment.startswith("fx:"):
+        if pos.magic == magic or pos.magic == EA_MAGIC or comment.startswith("fx:") or comment.startswith("h1r5:") or comment.startswith("H1RngM5"):
             return True
     return False
 
@@ -1923,6 +2240,232 @@ def desk_has_live_tickets() -> bool:
         if row.get("status") == "active":
             return True
     return False
+
+
+IDLE_ROTATE_SECONDS = 30.0
+
+
+def pick_idle_account(
+    enabled: list[dict],
+    current: dict | None,
+    book_open: dict[str, bool],
+    last_switch: float,
+) -> tuple[dict, float]:
+    """Stay on one login while idle. Rotate slowly only among accounts with our book."""
+    if not enabled:
+        return current or {}, last_switch
+    if len(enabled) == 1:
+        return enabled[0], last_switch
+    need = [a for a in enabled if book_open.get(a["id"])]
+    if not need:
+        need = [enabled[0]]
+    now = time.time()
+    current_id = str((current or {}).get("id") or "")
+    current_ok = any(a["id"] == current_id for a in need)
+    if current_ok and (len(need) == 1 or now - last_switch < IDLE_ROTATE_SECONDS):
+        return next(a for a in need if a["id"] == current_id), last_switch
+    if current_ok and len(need) > 1:
+        ids = [a["id"] for a in need]
+        return need[(ids.index(current_id) + 1) % len(need)], now
+    return need[0], now
+
+
+def gold_watch_on(enabled: list[dict] | None = None) -> bool:
+    rows = enabled if enabled is not None else [a for a in load_accounts() if a.get("enabled")]
+    return any(str(a.get("id") or "") == "acc1" for a in rows)
+
+
+def load_ea_signal_map() -> dict:
+    data = read_json(EA_SIGNAL_MAP_PATH, {"tickets": {}})
+    if not isinstance(data, dict) or not isinstance(data.get("tickets"), dict):
+        return {"tickets": {}}
+    return data
+
+
+def save_ea_signal_map(store: dict) -> None:
+    store["updatedAt"] = now_iso()
+    write_json(EA_SIGNAL_MAP_PATH, store)
+
+
+def ensure_telegram_poster() -> None:
+    try:
+        if TELEGRAM_PID_PATH.exists():
+            pid = int(TELEGRAM_PID_PATH.read_text(encoding="utf-8").strip() or "0")
+            if pid and pid_alive(pid):
+                return
+    except Exception:
+        pass
+    log_path = DATA / "telegram-poster.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(log_path, "a", encoding="utf-8")
+    subprocess.Popen(
+        [sys.executable, "-u", str(ROOT / "scripts" / "telegram_poster.py")],
+        cwd=str(ROOT),
+        stdout=handle,
+        stderr=handle,
+        stdin=subprocess.DEVNULL,
+        creationflags=0x00000200 | 0x08000000 if os.name == "nt" else 0,
+    )
+
+
+def enqueue_telegram_job(signal: dict) -> None:
+    queue = read_json(TELEGRAM_QUEUE_PATH, {"jobs": []})
+    if not isinstance(queue, dict) or not isinstance(queue.get("jobs"), list):
+        queue = {"jobs": []}
+    sid = str(signal.get("id") or "")
+    for job in queue["jobs"]:
+        if str(job.get("signalId") or "") == sid and job.get("status") in {
+            "queued",
+            "sending",
+            "sent",
+            "revealed",
+        }:
+            ensure_telegram_poster()
+            return
+    now = datetime.now(timezone.utc)
+    queue["jobs"].append(
+        {
+            "id": secrets.token_hex(4),
+            "signalId": sid,
+            "pair": signal.get("pair"),
+            "side": signal.get("side"),
+            "entry": signal.get("entry"),
+            "takeProfit": signal.get("takeProfit"),
+            "stopLoss": signal.get("stopLoss"),
+            "till": signal.get("till"),
+            "dueAt": now.isoformat(),
+            "revealAt": (now + timedelta(seconds=REGULAR_DELAY_SEC)).isoformat(),
+            "status": "queued",
+            "createdAt": now.isoformat(),
+        }
+    )
+    write_json(TELEGRAM_QUEUE_PATH, {"jobs": queue["jobs"][-80:]})
+    ensure_telegram_poster()
+
+
+def publish_ea_signal_local(pos: dict) -> str:
+    data = read_json(SIGNALS_PATH, None)
+    if not isinstance(data, dict) or not isinstance(data.get("signals"), list):
+        data = {"signals": [], "monthly": [], "pipLedger": []}
+    now = now_iso()
+    till = (datetime.now(timezone.utc) + timedelta(hours=6)).isoformat()
+    sid = secrets.token_hex(6)
+    row = {
+        "id": sid,
+        "pair": "XAUUSD",
+        "side": pos["side"],
+        "status": "active",
+        "from": now,
+        "till": till,
+        "entry": pos["entry"],
+        "takeProfit": pos["tp"],
+        "stopLoss": pos["sl"],
+        "filledEntry": pos["entry"],
+        "note": "H1 range M5 sweep",
+        "publishedAt": now,
+        "updatedAt": now,
+        "enteredAt": now,
+        "levelRevisions": [{"stopLoss": pos["sl"], "takeProfit": pos["tp"], "at": now}],
+        "mt5": {
+            "status": "sent",
+            "message": "market H1RngM5",
+            "ticket": pos["ticket"],
+            "at": now,
+        },
+    }
+    data["signals"].append(row)
+    write_json(SIGNALS_PATH, data)
+    enqueue_telegram_job(row)
+    log(f"Desk gold EA card {sid} {pos['side']} @ {pos['entry']} (local)")
+    return sid
+
+
+def publish_ea_signal_http(pos: dict) -> str | None:
+    payload = json.dumps(
+        {
+            "action": "open",
+            "pair": "XAUUSD",
+            "side": pos["side"],
+            "entry": pos["entry"],
+            "takeProfit": pos["tp"],
+            "stopLoss": pos["sl"],
+            "ticket": pos["ticket"],
+        }
+    ).encode("utf-8")
+    for url in (
+        "http://127.0.0.1:3001/api/internal/ea-signal",
+        "http://127.0.0.1:3000/api/internal/ea-signal",
+    ):
+        try:
+            req = Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+            with urlopen(req, timeout=6) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+            sid = str(body.get("signalId") or "")
+            if sid:
+                log(f"Desk gold EA card {sid} {pos['side']} @ {pos['entry']} (website)")
+                return sid
+        except Exception:
+            continue
+    return None
+
+
+def gold_exit_price(ticket: int, signal_id: str) -> tuple[str, float]:
+    sl = tp = 0.0
+    data = read_json(SIGNALS_PATH, {})
+    for row in data.get("signals") or []:
+        if str(row.get("id") or "") == str(signal_id):
+            sl = float(row.get("stopLoss") or 0)
+            tp = float(row.get("takeProfit") or 0)
+            break
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=3)
+    deals = mt5.history_deals_get(start, end) or []
+    price = 0.0
+    for deal in reversed(list(deals)):
+        if int(getattr(deal, "position_id", 0) or 0) != int(ticket):
+            continue
+        if int(getattr(deal, "entry", 0) or 0) != mt5.DEAL_ENTRY_OUT:
+            continue
+        price = float(deal.price or 0)
+        break
+    if price <= 0:
+        return "manual", sl or tp
+    if tp and sl and abs(price - tp) <= abs(price - sl):
+        return "tp", price
+    if sl and abs(price - sl) < abs(price - (tp or sl)):
+        return "sl", price
+    return "manual", price
+
+
+def sync_gold_ea_signals(cfg: dict) -> None:
+    """Turn Account 1 gold-EA fills into website + Telegram cards."""
+    if str(cfg.get("id") or "") != "acc1":
+        return
+    live = snapshot_gold_positions()
+    live_ids = {str(row["ticket"]) for row in live}
+    store = load_ea_signal_map()
+    tickets = store.setdefault("tickets", {})
+    dirty = False
+    for row in live:
+        key = str(row["ticket"])
+        if tickets.get(key):
+            continue
+        sid = publish_ea_signal_http(row)
+        if sid:
+            ensure_telegram_poster()
+        else:
+            sid = publish_ea_signal_local(row)
+        tickets[key] = sid
+        dirty = True
+    for key, sid in list(tickets.items()):
+        if key in live_ids:
+            continue
+        kind, price = gold_exit_price(int(key), str(sid))
+        notify_desk_fill(str(sid), price, kind)
+        tickets.pop(key, None)
+        dirty = True
+    if dirty:
+        save_ea_signal_map(store)
 
 
 def desk_still_busy(enabled: list[dict], connected_cfg: dict | None) -> bool:
@@ -1948,6 +2491,197 @@ def account_for_job(job: dict, accounts: list[dict]) -> dict | None:
     return enabled[0] if enabled else None
 
 
+def load_copy_map() -> dict:
+    data = read_json(COPY_MAP_PATH, {"positions": {}})
+    if not isinstance(data, dict) or not isinstance(data.get("positions"), dict):
+        return {"positions": {}}
+    return data
+
+
+def save_copy_map(store: dict) -> None:
+    store["updatedAt"] = now_iso()
+    write_json(COPY_MAP_PATH, store)
+
+
+def write_gold_ea_flag(master: dict | None) -> None:
+    if not master:
+        return
+    try:
+        GOLD_EA_FLAG.parent.mkdir(parents=True, exist_ok=True)
+        if GOLD_EA_OFF.exists():
+            if GOLD_EA_FLAG.exists():
+                GOLD_EA_FLAG.unlink()
+            return
+        GOLD_EA_FLAG.write_text(str(master.get("login") or ""), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def is_gold_ea_position(pos) -> bool:
+    comment = str(getattr(pos, "comment", "") or "")
+    magic = int(getattr(pos, "magic", 0) or 0)
+    symbol = str(getattr(pos, "symbol", "") or "").upper()
+    if "XAUUSD" not in symbol and "GOLD" not in symbol:
+        return False
+    return magic == EA_MAGIC or comment.startswith("H1RngM5") or comment.startswith("h1r5:")
+
+
+def gold_copy_comment(master_ticket: int) -> str:
+    return f"h1r5:{int(master_ticket)}"[:31]
+
+
+def close_position_ticket(ticket: int, cfg: dict) -> bool:
+    rows = mt5.positions_get(ticket=int(ticket))
+    if not rows:
+        return True
+    pos = rows[0]
+    info = mt5.symbol_info(pos.symbol)
+    tick = mt5.symbol_info_tick(pos.symbol)
+    if info is None or tick is None:
+        return False
+    close_type = mt5.ORDER_TYPE_SELL if pos.type == mt5.POSITION_TYPE_BUY else mt5.ORDER_TYPE_BUY
+    price = tick.bid if close_type == mt5.ORDER_TYPE_SELL else tick.ask
+    result = send_request(
+        {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": pos.symbol,
+            "volume": pos.volume,
+            "type": close_type,
+            "position": pos.ticket,
+            "price": price,
+            "deviation": max(int(cfg.get("deviation") or 20), 30),
+            "magic": EA_MAGIC,
+            "comment": "h1r5:close",
+        },
+        filling_modes(info),
+    )
+    return bool(result and result.retcode == mt5.TRADE_RETCODE_DONE)
+
+
+def find_follower_gold(master_ticket: int, mapped: int | None):
+    if mapped:
+        rows = mt5.positions_get(ticket=int(mapped))
+        if rows:
+            return rows[0]
+    tag = gold_copy_comment(master_ticket)
+    for pos in mt5.positions_get() or []:
+        comment = str(pos.comment or "")
+        if comment.startswith(tag) or tag in comment:
+            return pos
+    return None
+
+
+def open_gold_copy(master: dict, cfg: dict) -> int | None:
+    job = {
+        "action": "open",
+        "source": "gold-ea",
+        "mode": "market",
+        "accountId": cfg["id"],
+        "signalId": gold_copy_comment(master["ticket"]),
+        "pair": "XAUUSD",
+        "side": master["side"],
+        "entry": master["entry"],
+        "takeProfit": master["tp"],
+        "stopLoss": master["sl"],
+        "lot": 0,
+        "riskPct": cfg.get("riskPct") or 1,
+    }
+    status, ticket, message = open_trade(job, cfg)
+    log(f"copy {cfg['label']} [{status}] {master['side']} XAUUSD {message}")
+    return int(ticket) if ticket and status == "sent" else None
+
+
+def sync_sltp(pos, sl: float, tp: float) -> None:
+    info = mt5.symbol_info(pos.symbol)
+    if info is None:
+        return
+    digits = int(info.digits)
+    sl_r = round(float(sl or 0), digits)
+    tp_r = round(float(tp or 0), digits)
+    cur_sl = round(float(pos.sl or 0), digits)
+    cur_tp = round(float(pos.tp or 0), digits)
+    if sl_r == cur_sl and tp_r == cur_tp:
+        return
+    mt5.order_send(
+        {
+            "action": mt5.TRADE_ACTION_SLTP,
+            "position": pos.ticket,
+            "symbol": pos.symbol,
+            "sl": sl_r,
+            "tp": tp_r,
+        }
+    )
+
+
+def snapshot_gold_positions() -> list[dict]:
+    out = []
+    for pos in mt5.positions_get() or []:
+        if not is_gold_ea_position(pos):
+            continue
+        out.append(
+            {
+                "ticket": int(pos.ticket),
+                "side": "buy" if pos.type == mt5.POSITION_TYPE_BUY else "sell",
+                "entry": float(pos.price_open or 0),
+                "sl": float(pos.sl or 0),
+                "tp": float(pos.tp or 0),
+            }
+        )
+    return out
+
+
+def sync_gold_ea_copies(enabled: list[dict]) -> None:
+    """Mirror Account 1 gold-EA positions onto every other enabled account."""
+    if len(enabled) < 2:
+        return
+    master = enabled[0]
+    followers = enabled[1:]
+    status = connect(master)
+    if not status.get("connected"):
+        return
+    live = snapshot_gold_positions()
+    live_ids = {str(row["ticket"]) for row in live}
+    store = load_copy_map()
+    positions = store.setdefault("positions", {})
+    for fol in followers:
+        fol_status = connect(fol)
+        if not fol_status.get("connected"):
+            log(f"copy skip {fol['label']}: {fol_status.get('message')}")
+            continue
+        accs_changed = False
+        for key, accs in list(positions.items()):
+            if key in live_ids:
+                continue
+            mapped = accs.get(fol["id"])
+            pos = find_follower_gold(int(key), mapped)
+            if pos is not None:
+                if close_position_ticket(int(pos.ticket), fol):
+                    log(f"copy {fol['label']}: closed gold ticket {pos.ticket} (master {key} gone)")
+                    accs.pop(fol["id"], None)
+                    accs_changed = True
+            elif fol["id"] in accs:
+                accs.pop(fol["id"], None)
+                accs_changed = True
+            if not accs:
+                positions.pop(key, None)
+                accs_changed = True
+        for row in live:
+            key = str(row["ticket"])
+            accs = positions.setdefault(key, {})
+            pos = find_follower_gold(row["ticket"], accs.get(fol["id"]))
+            if pos is not None:
+                accs[fol["id"]] = int(pos.ticket)
+                sync_sltp(pos, row["sl"], row["tp"])
+                continue
+            ticket = open_gold_copy(row, fol)
+            if ticket:
+                accs[fol["id"]] = ticket
+                accs_changed = True
+        if accs_changed:
+            save_copy_map(store)
+    save_copy_map(store)
+
+
 def main() -> int:
     if another_instance_running():
         log("Executor already running — this copy will exit.")
@@ -1958,9 +2692,26 @@ def main() -> int:
     log("Executor started")
     log(f"Queue: {QUEUE_PATH}")
     DATA.mkdir(parents=True, exist_ok=True)
+    heartbeat("Opening linked MT5 terminals")
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from mt5_terminals import prepare_all
+
+        log("Opening linked MT5 accounts…")
+        for row in prepare_all():
+            log(f"{row.get('id')}: {row.get('message')}")
+    except Exception as exc:
+        log(f"Terminal prepare: {exc}")
+        traceback.print_exc()
+    try:
+        write_gold_ea_flag(master_cfg())
+    except Exception as exc:
+        log(f"gold EA flag: {exc}")
     heartbeat("Executor started")
     last_idle_key = ""
-    idle_account = 0
+    idle_cfg = None
+    last_idle_switch = 0.0
+    book_open: dict[str, bool] = {}
     quiet_since = time.time()
     while True:
         heartbeat()
@@ -1975,13 +2726,19 @@ def main() -> int:
             time.sleep(2)
             continue
         queue = load_queue()
+        if harvest_ea_results(queue):
+            save_queue(queue)
         pending = [j for j in queue["jobs"] if j.get("status") == "queued"]
         statuses = []
         dirty = False
         if not pending:
-            cfg = enabled[idle_account % len(enabled)]
+            cfg, last_idle_switch = pick_idle_account(enabled, idle_cfg, book_open, last_idle_switch)
+            idle_cfg = cfg
             first = connect(cfg)
-            idle_account += 1
+            if first.get("connected"):
+                book_open[cfg["id"]] = our_book_open(cfg)
+            else:
+                book_open[cfg["id"]] = False
             statuses.append(first)
             idle_key = f"{first.get('login')}|{first.get('server')}|{first.get('connected')}"
             if first.get("connected") and idle_key != last_idle_key:
@@ -2000,15 +2757,27 @@ def main() -> int:
                 except Exception as exc:
                     log(f"pnl: {exc}")
                 try:
+                    recover_trails_from_book(cfg)
                     manage_pending_invalidation()
                     manage_virtual_trails()
-                    manage_trails()
+                    manage_trails(cfg)
                     reconcile_closed_signals()
                 except Exception as exc:
                     log(f"manage: {exc}")
                     traceback.print_exc()
+            try:
+                sync_gold_ea_copies(enabled)
+            except Exception as exc:
+                log(f"gold copy: {exc}")
+                traceback.print_exc()
+            if first.get("connected"):
+                try:
+                    sync_gold_ea_signals(cfg)
+                except Exception as exc:
+                    log(f"gold signals: {exc}")
+                    traceback.print_exc()
             write_status(statuses, "Watching open trades" if first.get("connected") else first.get("message") or "Waiting for MT5")
-            if desk_still_busy(enabled, cfg if first.get("connected") else None):
+            if gold_watch_on(enabled) or desk_still_busy(enabled, cfg if first.get("connected") else None):
                 quiet_since = time.time()
             elif time.time() - quiet_since >= IDLE_EXIT_SECONDS:
                 log("No running trades or pending orders — stopping executor.")
@@ -2034,17 +2803,26 @@ def main() -> int:
             jobs = by_account.get(acc["id"]) or []
             if not jobs:
                 continue
+            if uses_local_agent(acc):
+                write_job_feeds(queue)
+                log(f"{acc['label']}: {len(jobs)} job(s) waiting on its MT5 agent")
+                continue
             status = connect(acc)
             statuses.append(status)
             if not status.get("connected"):
+                book_open[acc["id"]] = False
                 log(f"Waiting to send {len(jobs)} job(s) on {acc['label']}: {status['message']}")
                 continue
+            book_open[acc["id"]] = True
+            idle_cfg = acc
+            last_idle_switch = time.time()
             last_idle_key = ""
             quiet_since = time.time()
             log(f"Connected: {status.get('login')} @ {status.get('server')}  {status.get('balance')}")
             for job in jobs:
                 process_job(job, acc)
                 dirty = True
+            book_open[acc["id"]] = our_book_open(acc)
             try:
                 write_live_quotes()
             except Exception as exc:
@@ -2054,13 +2832,27 @@ def main() -> int:
             except Exception as exc:
                 log(f"pnl: {exc}")
             try:
+                recover_trails_from_book(acc)
                 manage_pending_invalidation()
                 manage_virtual_trails()
-                manage_trails()
+                manage_trails(acc)
                 reconcile_closed_signals()
             except Exception as exc:
                 log(f"manage: {exc}")
                 traceback.print_exc()
+        try:
+            sync_gold_ea_copies(enabled)
+        except Exception as exc:
+            log(f"gold copy: {exc}")
+            traceback.print_exc()
+        try:
+            master = next((a for a in enabled if str(a.get("id") or "") == "acc1"), enabled[0])
+            if idle_cfg and str(idle_cfg.get("id") or "") == "acc1":
+                master = idle_cfg
+            sync_gold_ea_signals(master)
+        except Exception as exc:
+            log(f"gold signals: {exc}")
+            traceback.print_exc()
         if leftover:
             statuses.append({"id": "unassigned", "ok": False, "connected": False, "message": "jobs with no account"})
         if dirty:

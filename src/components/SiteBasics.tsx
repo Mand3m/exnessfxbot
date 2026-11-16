@@ -2,6 +2,7 @@ import Link from "next/link";
 import { AppFold } from "@/components/AppFold";
 import { isAndroidApp } from "@/lib/app-shell";
 import { ARTICLES } from "@/lib/learn";
+import { SHOW_PREMIUM } from "@/lib/site";
 
 const ORDER = [
   "what-is-forex-trading",
@@ -98,12 +99,14 @@ export async function SiteBasics() {
           <AppFold title="Forex Trading Basics">{basicsLinks}</AppFold>
           <AppFold title="Instructions">{INSTRUCTIONS}</AppFold>
           <AppFold title="Disclaimer">{DISCLAIMER}</AppFold>
-          <a
-            href="/premium#pay"
-            className="inline-flex min-h-11 w-full items-center justify-center rounded-full bg-[#e0b422] px-6 py-3 text-sm font-semibold !text-black"
-          >
-            Subscribe to Algo-Sniper Bot
-          </a>
+          {SHOW_PREMIUM ? (
+            <a
+              href="/premium#pay"
+              className="inline-flex min-h-11 w-full items-center justify-center rounded-full bg-[#e0b422] px-6 py-3 text-sm font-semibold !text-black"
+            >
+              Subscribe to Algo-Sniper Bot
+            </a>
+          ) : null}
         </div>
       ) : (
         <section className="rounded-2xl border border-border bg-card px-4 py-6 text-center sm:px-6 sm:py-8">

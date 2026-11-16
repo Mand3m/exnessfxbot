@@ -2,6 +2,12 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   allowedDevOrigins: ["127.0.0.1", "localhost", "192.168.100.160"],
+  async redirects() {
+    return [
+      { source: "/beginner", destination: "/students", permanent: false },
+      { source: "/beginner-pack", destination: "/students", permanent: false },
+    ];
+  },
   async headers() {
     return [
       {

@@ -6,7 +6,7 @@ import { DEFAULT_RISK_PCT, RISK_TIERS } from "./calc";
 import type { PairId, Side, Signal } from "./signals";
 
 const EXECUTOR_STALE_MS = 25_000;
-const JOB_WAIT_MS = 20_000;
+const JOB_WAIT_MS = 45_000;
 
 export const MT5_MAX_ACCOUNTS = 5;
 
@@ -159,6 +159,30 @@ function saveAccounts(accounts: Mt5Account[]) {
   writeJson(CONFIG_PATH, { accounts: accounts.slice(0, MT5_MAX_ACCOUNTS) });
 }
 
+function cloneTerminalPath(accountId: string) {
+  return path.join(process.cwd(), "mt5-terminals", accountId, "terminal64.exe");
+}
+
+/** Create/open that account's private MT5 window in the background. */
+export function provisionMt5Account(accountId: string) {
+  if (process.env.VERCEL || process.platform !== "win32" || !accountId) return;
+  try {
+    ensureDir();
+    const script = path.join(process.cwd(), "scripts", "mt5_terminals.py");
+    const log = fs.openSync(path.join(DATA_DIR, "mt5-terminals.log"), "a");
+    const child = spawn("python", ["-u", script, "provision", "--id", accountId], {
+      cwd: process.cwd(),
+      detached: true,
+      stdio: ["ignore", log, log],
+      windowsHide: true,
+      env: { ...process.env, PYTHONUNBUFFERED: "1", PYTHONIOENCODING: "utf-8" },
+    });
+    child.unref();
+  } catch (err) {
+    console.error("Could not provision MT5 terminal", err);
+  }
+}
+
 export function enabledMt5Accounts() {
   return loadMt5Accounts().filter((a) => a.enabled);
 }
@@ -185,9 +209,15 @@ export function saveMt5Account(input: Partial<Mt5Account> & { password?: string 
     },
     index
   );
+  if (!merged.terminalPath && merged.login) {
+    merged.terminalPath = cloneTerminalPath(merged.id);
+  }
   if (existing) accounts[index] = merged;
   else accounts.push(merged);
   saveAccounts(accounts);
+  if (merged.login && merged.server) {
+    provisionMt5Account(merged.id);
+  }
   return merged;
 }
 
@@ -226,6 +256,18 @@ export function loadMt5Queue(): QueueFile {
 
 function pidAlive(pid: number) {
   if (!pid || !Number.isFinite(pid)) return false;
+  if (process.platform === "win32") {
+    try {
+      const out = spawnSync("tasklist", ["/FI", `PID eq ${pid}`, "/NH"], {
+        encoding: "utf8",
+        windowsHide: true,
+      });
+      const text = `${out.stdout || ""}${out.stderr || ""}`;
+      return text.includes(String(pid)) && !/No tasks|INFO: No tasks/i.test(text);
+    } catch {
+      return false;
+    }
+  }
   try {
     process.kill(pid, 0);
     return true;
@@ -306,13 +348,35 @@ export function ensureMt5Executor(opts?: { restartIfStale?: boolean }) {
     ensureDir();
     const script = path.join(process.cwd(), "scripts", "mt5_executor.py");
     const log = fs.openSync(EXEC_LOG, "a");
-    const child = spawn("python", ["-u", script], {
-      cwd: process.cwd(),
-      detached: true,
-      stdio: ["ignore", log, log],
-      windowsHide: true,
-      env: { ...process.env, PYTHONUNBUFFERED: "1" },
-    });
+    const pyCandidates = [
+      process.env.PYTHON_EXE,
+      process.platform === "win32"
+        ? path.join(process.env.LOCALAPPDATA || "", "Programs", "Python", "Python314", "python.exe")
+        : "",
+      process.platform === "win32"
+        ? path.join(process.env.LOCALAPPDATA || "", "Programs", "Python", "Python313", "python.exe")
+        : "",
+      "python",
+      "py",
+    ].filter(Boolean) as string[];
+    let child: ReturnType<typeof spawn> | null = null;
+    for (const py of pyCandidates) {
+      try {
+        if (py !== "python" && py !== "py" && !fs.existsSync(py)) continue;
+        const args = py === "py" ? ["-3", "-u", script] : ["-u", script];
+        child = spawn(py, args, {
+          cwd: process.cwd(),
+          detached: true,
+          stdio: ["ignore", log, log],
+          windowsHide: true,
+          env: { ...process.env, PYTHONUNBUFFERED: "1", PYTHONIOENCODING: "utf-8" },
+        });
+        break;
+      } catch {
+        child = null;
+      }
+    }
+    if (!child) throw new Error("Could not spawn python for MT5 executor");
     child.unref();
     if (child.pid) {
       fs.writeFileSync(PID_PATH, String(child.pid));
@@ -419,7 +483,16 @@ function jobPnlUsd(job: Mt5Job, pnl: Mt5Pnl | null): number | null {
 export function loadMt5Status(): Mt5Status | null {
   try {
     if (!fs.existsSync(STATUS_PATH)) return null;
-    return JSON.parse(fs.readFileSync(STATUS_PATH, "utf8")) as Mt5Status;
+    const raw = fs.readFileSync(STATUS_PATH);
+    if (!raw.length || raw.every((b) => b === 0)) {
+      try {
+        fs.unlinkSync(STATUS_PATH);
+      } catch {
+        // ignore
+      }
+      return null;
+    }
+    return JSON.parse(raw.toString("utf8")) as Mt5Status;
   } catch {
     return null;
   }
@@ -494,14 +567,18 @@ export function enqueueMt5Open(signal: Signal, openOnMt5?: boolean): Mt5Job[] {
   }));
 }
 
-export function enqueueMt5Cancel(signalId: string): Mt5Job[] {
+export function enqueueMt5Cancel(
+  signalId: string,
+  pair: PairId = "USDJPY",
+  side: Side = "buy"
+): Mt5Job[] {
   if (!signalId) return [];
   return pushJobsForAccounts(enabledMt5Accounts(), (account) => ({
     action: "cancel",
     accountId: account.id,
     signalId,
-    pair: "USDJPY",
-    side: "buy",
+    pair,
+    side,
     entry: 0,
     takeProfit: 0,
     stopLoss: 0,
@@ -527,7 +604,9 @@ export function mt5PublishNote(jobs: Mt5Job[] | Mt5Job | null, enabled: boolean 
   const count = typeof enabled === "number" ? enabled : enabled ? 1 : 0;
   const list = Array.isArray(jobs) ? jobs : jobs ? [jobs] : [];
   if (count <= 0) return "";
-  if (!list.length) return " MT5 link is on but this submit skipped the trade.";
+  if (!list.length) {
+    return " No new MT5 order queued (checkbox off, or trade already live on MT5).";
+  }
   return (
     " " +
     list

@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ResultsTracker } from "@/components/ResultsTracker";
+import { MonthlyLineChart } from "@/components/MonthlyLineChart";
 import { formatPrice, pairFromSlug } from "@/lib/pairs";
 import { isEntered, listMonthPairResults, listMonthPairSignals, settleLiveOrders } from "@/lib/signals";
 import { eatMonthKey, formatArchiveWhen, isEatMonthClosed } from "@/lib/time";
@@ -93,7 +93,12 @@ export default async function MonthPairPage({ params }: Props) {
       </p>
 
       <div className="mt-8">
-        <ResultsTracker data={chart} title={`${pair.label} results`} lockPair={pair.id} />
+        <MonthlyLineChart
+          data={chart}
+          title={`${pair.label} results`}
+          year={parsed.y}
+          month={parsed.m}
+        />
       </div>
 
       {rows.length === 0 ? (
