@@ -77,7 +77,7 @@ export async function sendPasswordResetEmail(to: string, url: string) {
   return sendMail(to, subject, text, html);
 }
 
-async function sendMail(to: string, subject: string, text: string, html: string) {
+async function sendMail(to: string, subject: string, text: string, html: string, replyTo: string = DESK_EMAIL) {
   const cfg = smtpTransport();
   if (!cfg) {
     console.error("[mail] SMTP is not configured", to, subject);
@@ -88,7 +88,7 @@ async function sendMail(to: string, subject: string, text: string, html: string)
     const transport = nodemailer.createTransport(cfg);
     await transport.sendMail({
       from: fromAddress(),
-      replyTo: DESK_EMAIL,
+      replyTo,
       to,
       subject,
       text,
@@ -132,4 +132,55 @@ export async function sendSignalAlert(
     `<p>Entry <strong>${signal.entry}</strong><br>TP <strong>${signal.takeProfit}</strong><br>SL <strong>${signal.stopLoss}</strong></p>` +
     "</div>";
   return sendMail(to, subject, text, html);
+}
+
+function escapeHtml(s: string) {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/** New Forex Traders' Journal Club waitlist signup, delivered to the desk inbox. */
+export async function sendJournalClubSignup(signup: {
+  name: string;
+  email: string;
+  contact: string;
+  country: string;
+  experience: string;
+  message: string;
+  createdAt: string;
+}) {
+  const subject = `Journal Club waitlist: ${signup.name} (${signup.experience})`;
+  const rows: [string, string][] = [
+    ["Name", signup.name],
+    ["Email", signup.email],
+    ["Phone / WhatsApp", signup.contact],
+    ["Country", signup.country],
+    ["Experience", signup.experience],
+    ["Message", signup.message || "(none)"],
+    ["Signed up", signup.createdAt],
+  ];
+  const text =
+    "New Forex Traders' Journal Club waitlist signup\n\n" +
+    rows.map(([k, v]) => `${k}: ${v}`).join("\n") +
+    "\n\nReply to this email to reach the trader directly.\n";
+  const html =
+    '<div style="font-family:Georgia,serif;background:#000;color:#f3d56a;padding:28px">' +
+    '<h1 style="color:#e0b422;font-weight:400">Journal Club waitlist</h1>' +
+    "<p>A new trader joined the Forex Traders&#39; Journal Club waitlist.</p>" +
+    '<table style="border-collapse:collapse">' +
+    rows
+      .map(
+        ([k, v]) =>
+          `<tr><td style="padding:4px 14px 4px 0;color:#d4b84a;vertical-align:top">${k}</td>` +
+          `<td style="padding:4px 0;white-space:pre-wrap">${escapeHtml(v)}</td></tr>`
+      )
+      .join("") +
+    "</table>" +
+    '<p style="color:#d4b84a;font-size:13px">Reply to this email to reach the trader directly.</p>' +
+    "</div>";
+  return sendMail(DESK_EMAIL, subject, text, html, signup.email);
 }

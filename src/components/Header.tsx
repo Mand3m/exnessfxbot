@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -16,6 +16,7 @@ export function Header() {
   const premiumOn = pathname.startsWith("/premium");
   const sniperOn = pathname.startsWith("/algo-sniper");
   const teamOn = pathname.startsWith("/team");
+  const journalOn = pathname.startsWith("/journal-club");
   const mentorOn =
     pathname.startsWith("/mentorship") ||
     pathname.startsWith("/students") ||
@@ -54,6 +55,14 @@ export function Header() {
               }`}
             >
               Mentorship
+            </Link>
+            <Link
+              href="/journal-club"
+              className={`whitespace-nowrap px-1 py-2 text-xs font-extrabold tracking-tight text-[#FFD700] sm:px-2 sm:text-sm lg:px-3 lg:text-base ${
+                journalOn ? "" : "hover:text-white"
+              }`}
+            >
+              Journal Club
             </Link>
             <Link
               href="/team"

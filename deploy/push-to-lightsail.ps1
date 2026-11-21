@@ -1,5 +1,5 @@
 # Deploy Forex Trading Consultants to the existing Lightsail box (beside serpal.xyz).
-# Does NOT upload: .env.local, mt5.json, member-mt5.json, users.json, payments.json.
+# Does NOT upload: .env.local, mt5.json, member-mt5.json, users.json, payments.json, journal-club-waitlist.json.
 # Does NOT set LIVE_SITE_URL on the server (PC admin pushes cards to the live site).
 $ErrorActionPreference = "Stop"
 
@@ -118,6 +118,8 @@ try {
     --exclude=data/telegram-queue.json `
     --exclude=data/users.json `
     --exclude=data/payments.json `
+    --exclude=data/journal-club-waitlist.json `
+    --exclude=data/journal-club-waitlist.json.tmp `
     --exclude=data/beginner-pack/_extract `
     --exclude=data/last-verify-link.txt `
     --exclude=scripts/__pycache__ `

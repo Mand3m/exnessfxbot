@@ -17,6 +17,10 @@ export const INFORMATION_SHARE_URL = `https://${DESK_DOMAIN}${INFORMATION_PATH}`
 export const TEAM_PATH = "/team";
 export const TEAM_SHARE_URL = `https://${DESK_DOMAIN}${TEAM_PATH}`;
 
+/** Forex Traders' Journal Club waitlist (coming soon). */
+export const JOURNAL_CLUB_PATH = "/journal-club";
+export const JOURNAL_CLUB_SHARE_URL = `https://${DESK_DOMAIN}${JOURNAL_CLUB_PATH}`;
+
 /** Algo-Sniper Bot signals (formerly the homepage board). */
 export const ALGO_SNIPER_PATH = "/algo-sniper";
 export const ALGO_SNIPER_SHARE_URL = `https://${DESK_DOMAIN}${ALGO_SNIPER_PATH}`;
